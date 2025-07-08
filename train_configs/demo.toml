@@ -1,8 +1,8 @@
 # torchtitan Config.toml
 
 [job]
-dump_folder = "./outputs/primate_8B_131k"
-description = "primate-8B-131k training"
+dump_folder = "./outputs/demo"
+description = "demo-mae training"
 
 [profiling]
 enable_profiling = false
@@ -10,14 +10,13 @@ save_traces_folder = "profile_trace"
 profile_freq = 10
 
 [metrics]
-log_freq = 10
+log_freq = 1
 enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]
 name = "llama3"
-flavor = "8B"
-norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
+flavor = "1B"
 
 [optimizer]
 name = "AdamW"
@@ -25,25 +24,28 @@ lr = 3e-4
 
 [training]
 batch_size = 1
-seq_len = 131072
-vocab_size = 256
 warmup_steps = 1000  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
-steps = 50000  # number of training steps
+steps = 100000  # number of training steps
 data_parallel_replicate_degree = 1
 data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
 compile = false
-dataset = "primate"
+data_dir = "/lustre/gale/stf218/scratch/emin/seg3d/data" 
+subdir_name = "recon-1/em/fibsem-uint8"
+resolution = "s0"
+img_size = 512  # TODO: this should be under model
+patch_size = 8  # TODO: this should be under model
+mask_ratio = 0.95  # TODO: this should be under model
 
 [experimental]
 pipeline_parallel_degree = 1
 
 [checkpoint]
-enable_checkpoint = true
+enable_checkpoint = false
 folder = "checkpoint"
 interval_type = "steps"
-interval = 238
+interval = 100
 model_weights_only = false
 export_dtype = "bfloat16"
 async_mode = "async"  # ["disabled", "async", "async_with_pinned_mem"]

@@ -14,13 +14,15 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torchtitan.models.norms import build_norm
 
 import flash_attn_interface
 
 
 @dataclass
 class ModelArgs:
+    img_size: int = 512
+    patch_size: int = 8
+    num_channels: int = 1
     dim: int = 2048
     decoder_dim: int = 512
     n_layers: int = 16
@@ -31,7 +33,6 @@ class ModelArgs:
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-6
     rope_theta: float = 1_000_000
-    max_seq_len: int = 2048
     mask_ratio: float = 0.95
     depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
 
@@ -540,7 +541,7 @@ class Transformer(nn.Module):
     def _precompute_freqs_cis(self) -> torch.Tensor:
         return precompute_freqs_cis(
             self.model_args.dim // self.model_args.n_heads,
-            self.model_args.max_seq_len * 2,
+            (self.model_args.img_size // self.model_args.patch_size) ** 3,
             self.model_args.rope_theta,
         )
 

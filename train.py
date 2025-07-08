@@ -88,18 +88,12 @@ def main(job_config: JobConfig):
 
     model_name = job_config.model.name
 
-    # data_dir: str,
-    # subdir_name: str,
-    # batch_size: int,
-    # crop_size: tuple[int, int, int], 
-    # resolution: str = "s0",
-
     # build dataloader
     data_loader = build_data_loader(
         job_config.training.data_dir,
         job_config.training.subdir_name,
         job_config.training.batch_size,
-        job_config.training.crop_size,
+        (job_config.training.img_size, job_config.training.img_size, job_config.training.img_size),
         job_config.training.resolution,
         dp_degree,
         dp_rank,
@@ -108,12 +102,9 @@ def main(job_config: JobConfig):
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
     model_config = models_config[model_name][job_config.model.flavor]
-    # set the model configs from training inputs:
-    # 1. norm type to decide which norm layer to use
-    # 2. max_seq_len base on inputs
-    model_config.norm_type = job_config.model.norm_type
-    model_config.vocab_size = job_config.training.vocab_size
-    model_config.max_seq_len = job_config.training.seq_len
+    model_config.img_size = job_config.training.img_size
+    model_config.patch_size = job_config.training.patch_size
+    model_config.mask_ratio = job_config.training.mask_ratio
 
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
@@ -124,7 +115,8 @@ def main(job_config: JobConfig):
     float8_handler.convert_to_float8_training(model)
 
     # log model size
-    num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model, exclude_embedding=True), model_config, job_config.training.seq_len)
+    eff_seq_len = (1 - model_config.mask_ratio) * (model_config.img_size // model_config.patch_size) ** 3
+    num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model, exclude_embedding=True), model_config, eff_seq_len)  # is this still correct for MAE architecture?
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
@@ -154,6 +146,7 @@ def main(job_config: JobConfig):
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
     logger.info(f"GPU memory usage for model: {gpu_mem_stats.max_reserved_gib:.2f}GiB ({gpu_mem_stats.max_reserved_pct:.2f}%)")
+    logger.info(f"Number of parameters (exc. embedding layer): {utils.get_num_params(model, exclude_embedding=True)})")
 
     # build optimizer after applying parallelisms to the model
     optimizers = build_optimizers(model_parts, job_config)
@@ -209,7 +202,7 @@ def main(job_config: JobConfig):
         f"Training starts at step {train_state.step + 1}, "
         f"with local batch size {job_config.training.batch_size}, "
         f"global batch size {job_config.training.batch_size * dp_degree}, "
-        f"sequence length {job_config.training.seq_len}, "
+        f"effective sequence length {eff_seq_len}, "
         f"total steps {job_config.training.steps} "
         f"(warmup {job_config.training.warmup_steps})"
     )
