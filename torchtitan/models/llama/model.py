@@ -30,11 +30,10 @@ class ModelArgs:
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-6
-    rope_theta: float = 10000
+    rope_theta: float = 1_000_000
     max_seq_len: int = 2048
     mask_ratio: float = 0.95
-    # If `True`, then each transformer block init uses its layer ID, and if `False`, each uses the total number of transformer blocks
-    depth_init: bool = True
+    depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -149,7 +148,7 @@ class PatchEmbedding(nn.Module):
     def forward(self, x: torch.Tensor):
         B, C, D, H, W = x.shape
         x = self.proj(x).flatten(2)
-        x = torch.einsum("bcs->bsc", x)  # [B, D*H*W, C]
+        x = torch.einsum("bcs->bsc", x)  # [B, D*H*W, dim]
         return x
 
 
@@ -219,7 +218,7 @@ class Attention(nn.Module):
         keys = repeat_kv(xk, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
         values = repeat_kv(xv, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
-        # fa-3
+        # FlashAttention-3
         output, _ = flash_attn_interface.flash_attn_func(xq, xk, xv, causal=False)
         output = output.contiguous().view(bs, seqlen, -1)
 
@@ -286,7 +285,6 @@ class TransformerBlock(nn.Module):
         layer_id (int): Identifier for the layer.
         attention_norm (RMSNorm): Layer normalization for attention output.
         ffn_norm (RMSNorm): Layer normalization for feedforward output.
-
     """
 
     def __init__(self, layer_id: int, model_args: ModelArgs):
@@ -363,7 +361,6 @@ class TransformerEncoder(nn.Module):
             self.layers[str(layer_id)] = TransformerBlock(layer_id, model_args)
 
         self.norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
-        self.output = nn.Linear(model_args.dim, model_args.vocab_size, bias=False)
         self.init_weights()
 
     def init_weights(self):
@@ -385,26 +382,14 @@ class TransformerEncoder(nn.Module):
                 layer.init_weights()
         if self.norm is not None:
             self.norm.reset_parameters()
-        final_out_std = self.model_args.dim**-0.5
-        cutoff_factor = 3
-        if self.output is not None:
-            nn.init.trunc_normal_(
-                self.output.weight,
-                mean=0.0,
-                std=final_out_std,
-                a=-cutoff_factor * final_out_std,
-                b=cutoff_factor * final_out_std,
-            )
-            if self.output.bias is not None:
-                nn.init.zeros_(self.output.bias)
 
-    def random_masking(self, x: torch.Tensor, mask_ratio: float):
+    def random_mask(self, x: torch.Tensor, mask_ratio: float):
         """
         Perform per-sample random masking by per-sample shuffling.
         Per-sample shuffling is done by argsort random noise.
         x: [B, L, D], sequence, L is the total number of patches
         """
-        B, L, D = x.shape  # batch, length, dim
+        B, L, dim = x.shape  # batch, length, dim
         len_keep = int(L * (1 - mask_ratio))
 
         noise = torch.rand(B, L, device=x.device)  # noise in [0, 1] TODO: check that this is correct
@@ -415,10 +400,10 @@ class TransformerEncoder(nn.Module):
 
         # keep the first subset
         ids_keep = ids_shuffle[:, :len_keep]
-        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
 
         # generate the binary mask: 0 is keep, 1 is remove
-        mask = torch.ones([N, L], device=x.device)
+        mask = torch.ones([B, L], device=x.device)
         mask[:, :len_keep] = 0
 
         # unshuffle to get the binary mask
@@ -436,7 +421,7 @@ class TransformerEncoder(nn.Module):
             torch.Tensor: Output logits after applying the Transformer model.
         """
         x = self.patch_embedding(imgs)
-        B, L, D = x.shape
+        B, L, dim = x.shape
 
         # masking: length -> length * mask_ratio
         x, mask, ids_restore, ids_keep = self.random_mask(x, mask_ratio)  # TODO: do we need all of these outputs?
@@ -445,8 +430,7 @@ class TransformerEncoder(nn.Module):
             x = layer(x, freqs_cis)
 
         x = self.norm(x) if self.norm else x
-        output = self.output(x).float() if self.output else x
-        return output
+        return x, mask, ids_restore
 
     # do I still need the following method?
     @classmethod
@@ -542,7 +526,7 @@ class TransformerDecoder(nn.Module):
         return cls(model_args)
 
 
-# TODO: consolidate all architectural parameters under model_args
+# TODO: consolidate all architectural parameters under model_args?
 class Transformer(nn.Module):
     def __init__(self, model_args: ModelArgs):
         super().__init__()

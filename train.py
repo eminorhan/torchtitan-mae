@@ -88,13 +88,19 @@ def main(job_config: JobConfig):
 
     model_name = job_config.model.name
 
+    # data_dir: str,
+    # subdir_name: str,
+    # batch_size: int,
+    # crop_size: tuple[int, int, int], 
+    # resolution: str = "s0",
+
     # build dataloader
     data_loader = build_data_loader(
-        job_config.training.dataset,
-        job_config.training.dataset_path,
+        job_config.training.data_dir,
+        job_config.training.subdir_name,
         job_config.training.batch_size,
-        job_config.training.seq_len,
-        job_config.training.vocab_size,
+        job_config.training.crop_size,
+        job_config.training.resolution,
         dp_degree,
         dp_rank,
     )
@@ -119,10 +125,6 @@ def main(job_config: JobConfig):
 
     # log model size
     num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model, exclude_embedding=True), model_config, job_config.training.seq_len)
-
-    # loss function to be shared by Pipeline Parallel and SPMD training
-    def loss_fn(pred, labels):
-        return torch.nn.functional.cross_entropy(pred.flatten(0, 1), labels.flatten(0, 1))
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
@@ -219,12 +221,10 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
-            input_ids, labels = batch
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
-            input_ids = input_ids.cuda()
-            labels = labels.cuda()
+            batch = batch.cuda()
             optimizers.zero_grad()
 
             if parallel_dims.pp_enabled:
@@ -233,7 +233,7 @@ def main(job_config: JobConfig):
 
                 with train_context():
                     if pp_mesh.get_local_rank() == 0:
-                        pp_schedule.step(input_ids)
+                        pp_schedule.step(batch)
                     elif is_last_stage:
                         losses = []
                         pp_schedule.step(target=labels, losses=losses)
@@ -245,10 +245,7 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context():
-                    pred = model(input_ids)  # pred.shape=(bs, seq_len, vocab_size)
-                    loss = loss_fn(pred, labels)
-                    # need to free before bwd to avoid peaking memory
-                    del pred
+                    loss = model(batch)  # loss.shape=(bs, seq_len, vocab_size)?
                     loss.backward()
 
             # clip gradients

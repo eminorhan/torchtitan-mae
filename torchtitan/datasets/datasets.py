@@ -1,4 +1,7 @@
+import os
+import random
 import pickle
+import zarr
 import numpy as np
 from typing import Any, Dict, List, Optional
 
@@ -11,132 +14,36 @@ from torchtitan.logging import logger
 from datasets import Dataset, load_dataset
 from datasets.distributed import split_dataset_by_node
 
-# map from dataset name to a local directory, or a dataset repository on the HF hub
-_supported_datasets = {
-    "rodent": "eminorhan/neural-pile-rodent",
-    "primate": "eminorhan/neural-pile-primate",
-}
 
-class HuggingFaceDataset(IterableDataset, Stateful):
-    """PyTorch Representation of the HuggingFace Dataset.
-
-    Args:
-        dataset_name (str): name of the dataset to load
-        dataset_path (Optional[str]):
-            Path to the dataset in the file system. If provided, data will be loaded
-            from this path instead of downloaded.
-        seq_len (int): max sequence length
-        world_size (int): number of data parallel processes participating in training
-        rank (int): rank of the current data parallel process
-        infinite (bool): whether to loop infinitely over the dataset
-
-    """
-
-    def __init__(
-        self,
-        dataset_name: str,
-        dataset_path: Optional[str],
-        seq_len: int = 131072,
-        vocab_size: int = 256,
-        world_size: int = 1,
-        rank: int = 0,
-        infinite: bool = True,
-    ) -> None:
-        # allow user to pass in a (local or HF hub) path to use unsupported datasets
-        if dataset_name not in _supported_datasets:
-            if dataset_path:
-                logger.warning(f"Dataset {dataset_name} is not tested or verfied. Recommended datasets are: {list(_supported_datasets.keys())}")
-            else:
-                raise ValueError(f"Dataset {dataset_name} is not supported. Supported datasets are: {list(_supported_datasets.keys())}")
-
-        if not dataset_path:
-            dataset_path = _supported_datasets[dataset_name]
-        logger.info(f"Preparing {dataset_name} dataset from {dataset_path}")
-        ds = load_dataset(dataset_path, split="train")
-
-        # NOTE: datasets are pre-shuffled
-        self._data = split_dataset_by_node(ds, rank, world_size)
-        self.dataset_name = dataset_name
-        self.seq_len = seq_len
-        self.vocab_size = vocab_size
-        self.infinite = infinite
-
-        # variables for checkpointing
-        self._sample_idx = 0
-        self._all_tokens: List[int] = []
-
-    def __iter__(self):
-        max_buffer_token_len = 1 + self.seq_len
-
-        while True:
-            for sample in self._get_data_iter():
-                sample = np.array(sample['spike_counts'])
-                sample = np.concatenate((np.full((1, sample.shape[1]), self.vocab_size-1), sample), axis=0)
-                sample = sample.T.flatten().tolist()
-                self._all_tokens.extend(sample)
-                self._sample_idx += 1
-
-                while len(self._all_tokens) >= max_buffer_token_len:
-                    x = torch.LongTensor(self._all_tokens[:max_buffer_token_len])
-                    # update tokens to the remaining tokens
-                    self._all_tokens = self._all_tokens[max_buffer_token_len:]
-                    input = x[:-1]
-                    label = x[1:]
-                    yield input, label
-
-            if not self.infinite:
-                logger.warning(f"Dataset {self.dataset_name} has run out of data")
-                break
-            else:
-                # reset offset for the next iteration
-                self._sample_idx = 0
-                logger.warning(f"Dataset {self.dataset_name} is being re-looped")
-
-    def _get_data_iter(self):
-        # as skipping to the end throws an error in case of map-style dataset, return an empty iterator
-        if isinstance(self._data, Dataset) and self._sample_idx == len(self._data):
-            return iter([])
-
-        it = iter(self._data)
-        for _ in range(self._sample_idx):
-            next(it)
-
-        return it
-
-    def load_state_dict(self, state_dict):
-        self._sample_idx = state_dict["sample_idx"]
-        self._all_tokens = state_dict["token_buffer"]
-
-    def state_dict(self):
-        return {"token_buffer": self._all_tokens, "sample_idx": self._sample_idx}
-
-
-class SyntheticDataset(IterableDataset, Stateful):
-    """PyTorch IterableDataset for generating synthetic data on-the-fly.
+class VolumeDataset(IterableDataset, Stateful):
+    """PyTorch IterableDataset for generating random crops from volume data on-the-fly.
 
     This dataset generates random matrices, simulating a stream of data for training.
     It is stateful and supports checkpointing to ensure reproducibility in a
     distributed environment.
 
     Args:
-        seq_len (int): max sequence length
-        vocab_size (int): vocabulary size
+        data_dir: The path to the top-level directory containing volume folders.
+        subdir_name: Subdirectory name containing the EM data.
+        crop_size: A tuple of (depth, height, width) for the desired crop.
+        resolution: Resolution at which to retrieve the data (default: 's0').
         world_size (int): number of data parallel processes participating in training
         rank (int): rank of the current data parallel process
-        infinite (bool): whether to loop infinitely over the dataset
     """
-
     def __init__(
         self,
-        seq_len: int = 131072,
-        vocab_size: int = 256,
-        world_size: int = 1,
-        rank: int = 0,
-        infinite: bool = True,
+        data_dir: str,
+        subdir_name: str,
+        crop_size: tuple[int, int, int], 
+        resolution: str,
+        world_size: int,
+        rank: int,
     ) -> None:
-        self.seq_len = seq_len
-        self.vocab_size = vocab_size
-        self.infinite = infinite
+        self.data_dir = data_dir
+        self.subdir_name = subdir_name
+        self.crop_size = crop_size
+        self.resolution = resolution
+        self.world_size = world_size
         self.rank = rank
 
         # seed the rng for this process to ensure different data per rank
@@ -149,58 +56,119 @@ class SyntheticDataset(IterableDataset, Stateful):
         self._all_tokens: List[int] = []
         self._rng_state = np.random.get_state()
 
-    def _generate_sample(self) -> np.ndarray:
-        """Generates a single synthetic data sample."""
-        rows = np.random.randint(10, 1000)
-        cols = np.random.randint(100, 2000)
-        sample = np.zeros((rows, cols))
-        num_active_rows = int(rows * 0.1)
-        random_indices = np.random.choice(rows, size=num_active_rows, replace=False)
-        sample[random_indices] = 1
-        return sample
+    def _generate_sample(
+        self,
+    ) -> np.ndarray | None:
+        """
+        Selects a random volume from the data directory, opens its Zarr array,
+        and extracts a random 3D crop.
+
+        The expected directory structure for each volume is:
+        <data_dir>/<volume_name>/<volume_name>.zarr/recon-1/em/fibsem-uint8/s0
+
+        Returns:
+            A NumPy array containing the cropped data, or None if an error occurs.
+        """
+        
+        try:
+            # Get a list of all subdirectories in the data directory
+            volumes = [d for d in os.listdir(self.data_dir) if os.path.isdir(os.path.join(self.data_dir, d))]
+            if not volumes:
+                print(f"Error: No subdirectories found in '{data_dir}'.")
+                return None
+                
+            # 1. Randomly select one of the volumes
+            selected_volume = random.choice(volumes)
+            print(f"\nSelected volume: {selected_volume}")
+
+            # Construct the path to the highest resolution Zarr array ('s0')
+            # This path is based on the structure you described.
+            zarr_path = os.path.join(
+                self.data_dir,
+                selected_volume,
+                f"{selected_volume}.zarr",
+                self.subdir_name
+            )
+            
+            # 2. Open the Zarr array without loading it into memory
+            # We open the group first and then access the dataset at the requested resolution. 
+            # If 'fibsem-uint8' is the array itself, zarr.open
+            # would return an array object directly. This approach is more robust.
+            print(f"Opening Zarr store at: {zarr_path}")
+            zarr_group = zarr.open(zarr_path, mode='r')
+            print(f"Available resolutions: {list(zarr_group.keys())}")
+
+            # Assuming the highest resolution data is at scale 's0'
+            if self.resolution not in zarr_group:
+                print(f"Error: Could not find {resolution} dataset in '{zarr_path}'.")
+                print(f"Available resolutions: {list(zarr_group.keys())}")
+                return None
+                
+            zarr_array = zarr_group[self.resolution]
+            full_shape = zarr_array.shape
+            print(f"Full array shape: {full_shape}")
+            
+            # 3. Determine the coordinates for a random crop
+            cz, cy, cx = self.crop_size
+            
+            # Ensure the crop size is not larger than the full array
+            if any(c > f for c, f in zip(self.crop_size, full_shape)):
+                print("Error: Crop size is larger than the array dimensions.")
+                return None
+
+            # Calculate the maximum possible starting index for the crop in each dimension
+            max_z = full_shape[0] - cz
+            max_y = full_shape[1] - cy
+            max_x = full_shape[2] - cx
+            
+            # Generate a random starting point
+            start_z = random.randint(0, max_z)
+            start_y = random.randint(0, max_y)
+            start_x = random.randint(0, max_x)
+            
+            print(f"Extracting crop of size {self.crop_size} from starting coordinate: {(start_z, start_y, start_x)}")
+
+            # 4. Read the specific crop from the Zarr array into a NumPy array
+            # This is the step where the data is actually read from disk. Zarr is
+            # optimized to only read the chunks necessary to fulfill this slice.
+            crop_slice = (
+                slice(start_z, start_z + cz),
+                slice(start_y, start_y + cy),
+                slice(start_x, start_x + cx)
+            )
+            numpy_crop = zarr_array[crop_slice]
+            
+            return numpy_crop
+
+        except FileNotFoundError:
+            print(f"Error: The specified path or a part of it was not found. Check the path: {zarr_path}")
+            return None
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            return None
 
     def __iter__(self):
         # restore the RNG state at the beginning of iteration to ensure
         # that resuming from a checkpoint continues the same random sequence.
-        np.random.set_state(self._rng_state)
-
-        max_buffer_token_len = 1 + self.seq_len
+        np.random.set_state(self._rng_state)  # TODO: not sure if I really need this
 
         while True:
             sample = self._generate_sample()
             self._sample_idx += 1
 
-            # process the sample similarly to HuggingFaceDataset
-            sample = np.concatenate((np.full((1, sample.shape[1]), self.vocab_size - 1), sample), axis=0)
-            sample = sample.T.flatten().tolist()
-            self._all_tokens.extend(sample)
-
-            # yield sequences from the buffer
-            while len(self._all_tokens) >= max_buffer_token_len:
-                x = torch.LongTensor(self._all_tokens[:max_buffer_token_len])
-                self._all_tokens = self._all_tokens[max_buffer_token_len:]
-                input_seq = x[:-1]
-                label = x[1:]
-                yield input_seq, label
-
-            # for synthetic data, 'infinite' is the natural mode
-            # a hard stop is included for consistency if infinite=False
-            if not self.infinite and self._sample_idx > 100000:
-                 logger.warning(f"SyntheticDataset has reached its arbitrary limit of {self._sample_idx} samples.")
-                 break
+            # yield sample
+            yield sample
 
     def state_dict(self) -> Dict[str, Any]:
         # capture the current RNG state for checkpointing.
         self._rng_state = np.random.get_state()
         return {
-            "token_buffer": self._all_tokens,
             "sample_idx": self._sample_idx,
             "rng_state": self._rng_state,
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         self._sample_idx = state_dict["sample_idx"]
-        self._all_tokens = state_dict["token_buffer"]
         self._rng_state = state_dict["rng_state"]
         # rng state will be restored at the start of the next __iter__ call.
 
@@ -231,14 +199,13 @@ class DPAwareDataLoader(StatefulDataLoader, Stateful):
 
 
 def build_data_loader(
-    dataset_name: str,
-    dataset_path: Optional[str],
+    data_dir: str,
+    subdir_name: str,
     batch_size: int,
-    seq_len: int,
-    vocab_size: int,
-    world_size,
-    rank,
-    infinite: bool = True,
+    crop_size: tuple[int, int, int], 
+    resolution: str = "s0",
+    world_size: int = 1,
+    rank: int = 0,
 ) -> DPAwareDataLoader:
     """
     Builds a data loader for distributed training.
@@ -247,38 +214,25 @@ def build_data_loader(
     dataset with synthetically generated data.
 
     Args:
-        dataset_name (str): The name of the dataset. Use "synthetic" to generate
-            data on the fly. Otherwise, use a name from _supported_datasets.
+        data_dir: The path to the top-level directory containing volume folders.
+        subdir_name: Subdirectory name containing the EM data.
         batch_size (int): The batch size for the data loader.
-        seq_len (int): The sequence length of the samples.
-        vocab_size (int): The vocabulary size.
+        crop_size: A tuple of (depth, height, width) for the desired crop.
+        resolution: Resolution at which to retrieve the data (default: 's0').
         world_size (int): The total number of processes in the distributed group.
         rank (int): The rank of the current process.
-        dataset_path (Optional[str]): Path to a local dataset. Required for
-            unsupported Hugging Face datasets.
-        infinite (bool): Whether the data loader should loop infinitely.
 
     Returns:
         DPAwareDataLoader: A configured stateful data loader for distributed training.
     """
-    if dataset_name == "synthetic":
-        logger.info(f"Using synthetic dataset for rank {rank}.")
-        dataset = SyntheticDataset(
-            seq_len=seq_len,
-            vocab_size=vocab_size,
-            world_size=world_size,
-            rank=rank,
-            infinite=infinite,
-        )
-    else:
-        dataset = HuggingFaceDataset(
-            dataset_name=dataset_name,
-            dataset_path=dataset_path,
-            seq_len=seq_len,
-            vocab_size=vocab_size,
-            world_size=world_size,
-            rank=rank,
-            infinite=infinite,
-        )
+    logger.info(f"Using synthetic dataset for rank {rank}.")
+    dataset = VolumeDataset(
+        data_dir=data_dir,
+        subdir_name=subdir_name,
+        crop_size=crop_size, 
+        resolution=resolution,
+        world_size=world_size,
+        rank=rank
+    )
 
     return DPAwareDataLoader(rank, dataset, batch_size=batch_size)
