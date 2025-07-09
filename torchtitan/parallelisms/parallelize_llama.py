@@ -151,7 +151,7 @@ def apply_tp(
     # NOTE: At the cost of model code change, we can accelerate Sequence Parallel
     #       by folding (and unfolding) the batch dimension and the sequence dimension.
     #       Examples can be found at https://github.com/pytorch/torchtitan/pull/437
-    for layer_id, transformer_block in model.layers.items():
+    for layer_id, enc_transformer_block in model.encoder.layers.items():
         layer_plan = {
             "attention_norm": SequenceParallel(),
             "attention": prepare_module_input(
@@ -173,7 +173,34 @@ def apply_tp(
         }
 
         parallelize_module(
-            module=transformer_block,
+            module=enc_transformer_block,
+            device_mesh=tp_mesh,
+            parallelize_plan=layer_plan,
+        )
+
+    for layer_id, dec_transformer_block in model.decoder.layers.items():
+        layer_plan = {
+            "attention_norm": SequenceParallel(),
+            "attention": prepare_module_input(
+                input_layouts=(Shard(1), None),
+                desired_input_layouts=(Replicate(), None),
+            ),
+            "attention.wq": colwise_parallel(),
+            "attention.wk": colwise_parallel(),
+            "attention.wv": colwise_parallel(),
+            "attention.wo": rowwise_parallel(output_layouts=Shard(1)),
+            "ffn_norm": SequenceParallel(),
+            "feed_forward": prepare_module_input(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+            ),
+            "feed_forward.w1": colwise_parallel(),
+            "feed_forward.w2": rowwise_parallel(output_layouts=Shard(1)),
+            "feed_forward.w3": colwise_parallel(),
+        }
+
+        parallelize_module(
+            module=dec_transformer_block,
             device_mesh=tp_mesh,
             parallelize_plan=layer_plan,
         )
@@ -246,9 +273,13 @@ def _apply_ac_to_transformer_block(module: nn.Module, ac_config):
 
 def apply_ac(model: nn.Module, ac_config):
     """Apply activation checkpointing to the model."""
-    for layer_id, transformer_block in model.layers.named_children():
-        transformer_block = _apply_ac_to_transformer_block(transformer_block, ac_config)
-        model.layers.register_module(layer_id, transformer_block)
+    for enc_layer_id, enc_transformer_block in model.encoder.layers.named_children():
+        enc_transformer_block = _apply_ac_to_transformer_block(enc_transformer_block, ac_config)
+        model.encoder.layers.register_module(enc_layer_id, enc_transformer_block)
+
+    for dec_layer_id, dec_transformer_block in model.decoder.layers.named_children():
+        dec_transformer_block = _apply_ac_to_transformer_block(dec_transformer_block, ac_config)
+        model.decoder.layers.register_module(dec_layer_id, dec_transformer_block)
 
     logger.info(f"Applied {ac_config.mode} activation checkpointing to the model")
 
@@ -258,9 +289,13 @@ def apply_compile(model: nn.Module):
     Apply torch.compile to each TransformerBlock, which makes compilation efficient due to
     repeated structure. Alternatively one can compile the whole model (after applying DP).
     """
-    for layer_id, transformer_block in model.layers.named_children():
-        transformer_block = torch.compile(transformer_block, mode="default", fullgraph=True)
-        model.layers.register_module(layer_id, transformer_block)
+    for enc_layer_id, enc_transformer_block in model.encoder.layers.named_children():
+        enc_transformer_block = torch.compile(enc_transformer_block, mode="default", fullgraph=True)
+        model.encoder.layers.register_module(enc_layer_id, enc_transformer_block)
+
+    for dec_layer_id, dec_transformer_block in model.decoder.layers.named_children():
+        dec_transformer_block = torch.compile(dec_transformer_block, mode="default", fullgraph=True)
+        model.decoder.layers.register_module(dec_layer_id, dec_transformer_block)
 
     logger.info("Compiling each TransformerBlock with torch.compile")
 
@@ -285,7 +320,7 @@ def apply_fsdp(
         # check if strided sharding is enabled, which is necessary for 2D/3D DCP
         check_strided_sharding_enabled()
 
-    for layer_id, transformer_block in model.layers.items():
+    for enc_layer_id, enc_transformer_block in model.encoder.layers.items():
         if pp_enabled:
             # For PP, do not reshard after forward to avoid per-microbatch
             # all-gathers, which can be expensive and non-overlapped
@@ -293,9 +328,20 @@ def apply_fsdp(
         else:
             # As an optimization, do not reshard after forward for the last
             # transformer block since FSDP would prefetch it immediately
-            reshard_after_forward = int(layer_id) < len(model.layers) - 1
-        fully_shard(transformer_block, **fsdp_config, reshard_after_forward=False)
+            reshard_after_forward = int(enc_layer_id) < len(model.encoder.layers) - 1
+        fully_shard(enc_transformer_block, **fsdp_config, reshard_after_forward=False)
         
+    for dec_layer_id, dec_transformer_block in model.decoder.layers.items():
+        if pp_enabled:
+            # For PP, do not reshard after forward to avoid per-microbatch
+            # all-gathers, which can be expensive and non-overlapped
+            reshard_after_forward = False
+        else:
+            # As an optimization, do not reshard after forward for the last
+            # transformer block since FSDP would prefetch it immediately
+            reshard_after_forward = int(dec_layer_id) < len(model.decoder.layers) - 1
+        fully_shard(dec_transformer_block, **fsdp_config, reshard_after_forward=False)
+    
     fully_shard(model, **fsdp_config, reshard_after_forward=False)
 
 

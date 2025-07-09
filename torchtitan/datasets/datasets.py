@@ -74,12 +74,12 @@ class VolumeDataset(IterableDataset, Stateful):
             # Get a list of all subdirectories in the data directory
             volumes = [d for d in os.listdir(self.data_dir) if os.path.isdir(os.path.join(self.data_dir, d))]
             if not volumes:
-                print(f"Error: No subdirectories found in '{data_dir}'.")
+                # print(f"Error: No subdirectories found in '{data_dir}'.")
                 return None
                 
             # 1. Randomly select one of the volumes
             selected_volume = random.choice(volumes)
-            print(f"\nSelected volume: {selected_volume}")
+            # print(f"\nSelected volume: {selected_volume}")
 
             # Construct the path to the highest resolution Zarr array ('s0')
             # This path is based on the structure you described.
@@ -94,26 +94,26 @@ class VolumeDataset(IterableDataset, Stateful):
             # We open the group first and then access the dataset at the requested resolution. 
             # If 'fibsem-uint8' is the array itself, zarr.open
             # would return an array object directly. This approach is more robust.
-            print(f"Opening Zarr store at: {zarr_path}")
+            # print(f"Opening Zarr store at: {zarr_path}")
             zarr_group = zarr.open(zarr_path, mode='r')
-            print(f"Available resolutions: {list(zarr_group.keys())}")
+            # print(f"Available resolutions: {list(zarr_group.keys())}")
 
             # Assuming the highest resolution data is at scale 's0'
             if self.resolution not in zarr_group:
-                print(f"Error: Could not find {resolution} dataset in '{zarr_path}'.")
-                print(f"Available resolutions: {list(zarr_group.keys())}")
+                # print(f"Error: Could not find {resolution} dataset in '{zarr_path}'.")
+                # print(f"Available resolutions: {list(zarr_group.keys())}")
                 return None
                 
             zarr_array = zarr_group[self.resolution]
             full_shape = zarr_array.shape
-            print(f"Full array shape: {full_shape}")
+            # print(f"Full array shape: {full_shape}")
             
             # 3. Determine the coordinates for a random crop
             cz, cy, cx = self.crop_size
             
             # Ensure the crop size is not larger than the full array
             if any(c > f for c, f in zip(self.crop_size, full_shape)):
-                print("Error: Crop size is larger than the array dimensions.")
+                # print("Error: Crop size is larger than the array dimensions.")
                 return None
 
             # Calculate the maximum possible starting index for the crop in each dimension
@@ -126,7 +126,7 @@ class VolumeDataset(IterableDataset, Stateful):
             start_y = random.randint(0, max_y)
             start_x = random.randint(0, max_x)
             
-            print(f"Extracting crop of size {self.crop_size} from starting coordinate: {(start_z, start_y, start_x)}")
+            # print(f"Extracting crop of size {self.crop_size} from starting coordinate: {(start_z, start_y, start_x)}")
 
             # 4. Read the specific crop from the Zarr array into a NumPy array
             # This is the step where the data is actually read from disk. Zarr is
@@ -136,15 +136,17 @@ class VolumeDataset(IterableDataset, Stateful):
                 slice(start_y, start_y + cy),
                 slice(start_x, start_x + cx)
             )
-            numpy_crop = zarr_array[crop_slice]
+            crop = zarr_array[crop_slice]
+            crop = torch.from_numpy(crop).unsqueeze(0).to(torch.bfloat16)
+            # print(f"Crop shape/dtype: {crop.shape}/{crop.dtype}")
             
-            return numpy_crop
+            return crop
 
         except FileNotFoundError:
-            print(f"Error: The specified path or a part of it was not found. Check the path: {zarr_path}")
+            # print(f"Error: The specified path or a part of it was not found. Check the path: {zarr_path}")
             return None
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            # print(f"An unexpected error occurred: {e}")
             return None
 
     def __iter__(self):

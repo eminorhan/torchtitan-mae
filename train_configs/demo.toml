@@ -36,7 +36,7 @@ subdir_name = "recon-1/em/fibsem-uint8"
 resolution = "s0"
 img_size = 512  # TODO: this should be under model
 patch_size = 8  # TODO: this should be under model
-mask_ratio = 0.95  # TODO: this should be under model
+mask_ratio = 0.01  # TODO: this should be under model
 
 [experimental]
 pipeline_parallel_degree = 1

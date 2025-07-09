@@ -24,20 +24,28 @@ class ModelArgs:
     patch_size: int = 8
     num_channels: int = 1
     dim: int = 2048
-    decoder_dim: int = 512
     n_layers: int = 16
-    decoder_n_layers: int = 4
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-6
-    rope_theta: float = 1_000_000
+    rope_theta: float = 500_000
     mask_ratio: float = 0.95
     depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
+    # decoder args
+    decoder_dim: int = 512
+    decoder_n_layers: int = 4
+    decoder_n_heads: int = 32
+    decoder_n_kv_heads: Optional[int] = None
+    decoder_multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
+    decoder_ffn_dim_multiplier: Optional[float] = None
+    decoder_norm_eps: float = 1e-6
+    decoder_rope_theta: float = 500_000  # TODO: use different rope_theta for encoder and decoder
+    decoder_depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
 
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
+def precompute_freqs_cis(dim: int, end: int, theta: float = 500_000) -> torch.Tensor:
     """
     Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
 
@@ -171,21 +179,22 @@ class Attention(nn.Module):
         wo (Linear): Linear transformation for output.
     """
 
-    def __init__(self, model_args: ModelArgs):
+    def __init__(
+        self, 
+        n_heads: int, 
+        n_kv_heads: int | None,
+        dim: int,
+    ):
         super().__init__()
-        self.n_heads = model_args.n_heads
-        self.n_kv_heads = (
-            model_args.n_heads
-            if model_args.n_kv_heads is None
-            else model_args.n_kv_heads
-        )
+        self.n_heads = n_heads
+        self.n_kv_heads = n_heads if n_kv_heads is None else n_kv_heads
         self.n_rep = self.n_heads // self.n_kv_heads
-        self.head_dim = model_args.dim // model_args.n_heads
+        self.head_dim = dim // n_heads
 
-        self.wq = nn.Linear(model_args.dim, model_args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(model_args.n_heads * self.head_dim, model_args.dim, bias=False)
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv):
@@ -280,7 +289,6 @@ class TransformerBlock(nn.Module):
     Attributes:
         n_heads (int): Number of attention heads.
         dim (int): Dimension size of the model.
-        head_dim (int): Dimension size of each attention head.
         attention (Attention): Attention module.
         feed_forward (FeedForward): FeedForward module.
         layer_id (int): Identifier for the layer.
@@ -288,27 +296,38 @@ class TransformerBlock(nn.Module):
         ffn_norm (RMSNorm): Layer normalization for feedforward output.
     """
 
-    def __init__(self, layer_id: int, model_args: ModelArgs):
+    def __init__(
+        self, 
+        layer_id: int,
+        n_heads: int,
+        n_kv_heads: int | None,
+        dim: int,
+        multiple_of: int,
+        ffn_dim_multiplier: int,
+        n_layers: int,
+        norm_eps: float,
+        depth_init: bool,
+    ):
         super().__init__()
-        self.n_heads = model_args.n_heads
-        self.dim = model_args.dim
-        self.attention = Attention(model_args)
+        self.n_heads = n_heads
+        self.dim = dim
+        self.attention = Attention(n_heads, n_kv_heads, dim)
         self.feed_forward = FeedForward(
-            dim=model_args.dim,
-            hidden_dim=4 * model_args.dim,
-            multiple_of=model_args.multiple_of,
-            ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            dim=dim,
+            hidden_dim=4*dim,
+            multiple_of=multiple_of,
+            ffn_dim_multiplier=ffn_dim_multiplier,
         )
         self.layer_id = layer_id
-        self.num_layers = model_args.n_layers
+        self.n_layers = n_layers
 
-        self.attention_norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
-        self.ffn_norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
+        self.attention_norm = nn.RMSNorm(dim, eps=norm_eps)
+        self.ffn_norm = nn.RMSNorm(dim, eps=norm_eps)
 
-        if model_args.depth_init:
+        if depth_init:
             self.weight_init_std = 0.02 / (2 * (self.layer_id + 1)) ** 0.5
         else:
-            self.weight_init_std = 0.02 / (2 * self.num_layers) ** 0.5
+            self.weight_init_std = 0.02 / (2 * self.n_layers) ** 0.5
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
         """
@@ -320,7 +339,6 @@ class TransformerBlock(nn.Module):
 
         Returns:
             torch.Tensor: Output tensor after applying attention and feedforward layers.
-
         """
         h = x + self.attention(self.attention_norm(x), freqs_cis)
         out = h + self.feed_forward(self.ffn_norm(h))
@@ -357,12 +375,30 @@ class TransformerEncoder(nn.Module):
 
         self.patch_embedding = PatchEmbedding(model_args.img_size, model_args.patch_size, model_args.num_channels, model_args.dim)
 
+        self.register_buffer("freqs_cis", self._precompute_freqs_cis(), persistent=False)  # precompute pos embeddings (this will register self.freqs_cis)
+
         self.layers = torch.nn.ModuleDict()
         for layer_id in range(model_args.n_layers):
-            self.layers[str(layer_id)] = TransformerBlock(layer_id, model_args)
+            self.layers[str(layer_id)] = TransformerBlock(
+                layer_id, 
+                model_args.n_heads, 
+                model_args.n_kv_heads, 
+                model_args.dim, 
+                model_args.multiple_of, 
+                model_args.ffn_dim_multiplier, 
+                model_args.n_layers, 
+                model_args.norm_eps, 
+                model_args.depth_init
+            )
 
         self.norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
-        self.init_weights()
+
+    def _precompute_freqs_cis(self) -> torch.Tensor:
+        return precompute_freqs_cis(
+            self.model_args.dim // self.model_args.n_heads,
+            (self.model_args.img_size // self.model_args.patch_size) ** 3,
+            self.model_args.rope_theta,
+        )
 
     def init_weights(self):
         """
@@ -377,7 +413,7 @@ class TransformerEncoder(nn.Module):
         ``Transformer`` root module to avoid reinitializing tensors.
         """
         if self.patch_embedding is not None:
-            nn.init.normal_(self.patch_embedding.weight)
+            nn.init.normal_(self.patch_embedding.proj.weight)
         for layer in self.layers.values():
             if layer is not None:
                 layer.init_weights()
@@ -452,17 +488,36 @@ class TransformerDecoder(nn.Module):
     def __init__(self, model_args: ModelArgs):
         super().__init__()
         self.model_args = model_args
-        self.decoder_n_layers = model_args.decoder_n_layers
+        self.n_layers = model_args.n_layers
 
         self.embedding = nn.Linear(model_args.dim, model_args.decoder_dim, bias=False)
-    
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, model_args.decoder_dim))
+
+        self.register_buffer("freqs_cis", self._precompute_freqs_cis(), persistent=False)  # precompute pos embeddings (this will register self.freqs_cis)
+
         self.layers = torch.nn.ModuleDict()
         for layer_id in range(model_args.decoder_n_layers):
-            self.layers[str(layer_id)] = TransformerBlock(layer_id, model_args)
+            self.layers[str(layer_id)] = TransformerBlock(
+                layer_id, 
+                model_args.decoder_n_heads, 
+                model_args.decoder_n_kv_heads, 
+                model_args.decoder_dim, 
+                model_args.decoder_multiple_of, 
+                model_args.decoder_ffn_dim_multiplier, 
+                model_args.decoder_n_layers, 
+                model_args.decoder_norm_eps, 
+                model_args.decoder_depth_init
+            )
 
-        self.norm = nn.RMSNorm(model_args.decoder_dim, eps=model_args.norm_eps)
+        self.norm = nn.RMSNorm(model_args.decoder_dim, eps=model_args.decoder_norm_eps)
         self.output = nn.Linear(model_args.decoder_dim, model_args.patch_size**3 * model_args.num_channels, bias=False)
-        self.init_weights()
+
+    def _precompute_freqs_cis(self) -> torch.Tensor:
+        return precompute_freqs_cis(
+            self.model_args.decoder_dim // self.model_args.decoder_n_heads,
+            (self.model_args.img_size // self.model_args.patch_size) ** 3,
+            self.model_args.decoder_rope_theta,
+        )
 
     def init_weights(self):
         """
@@ -478,12 +533,14 @@ class TransformerDecoder(nn.Module):
         """
         if self.embedding is not None:
             nn.init.normal_(self.embedding.weight)
+        nn.init.normal_(self.mask_token)
+    
         for layer in self.layers.values():
             if layer is not None:
                 layer.init_weights()
         if self.norm is not None:
             self.norm.reset_parameters()
-        final_out_std = self.model_args.dim**-0.5
+        final_out_std = self.model_args.decoder_dim**-0.5
         cutoff_factor = 3
         if self.output is not None:
             nn.init.trunc_normal_(
@@ -496,7 +553,7 @@ class TransformerDecoder(nn.Module):
             if self.output.bias is not None:
                 nn.init.zeros_(self.output.bias)
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
+    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor, ids_restore: torch.Tensor):
         """
         Perform a forward pass through the TransformerDecoder model.
         Args:
@@ -505,8 +562,18 @@ class TransformerDecoder(nn.Module):
         Returns:
             torch.Tensor: Output logits after applying the TransformerDecoder model.
         """
-        # passthrough for nonexistent layers, allows easy configuration of pipeline parallel stages
+        B = x.shape[0]  # batch size
+        D = H = W = self.model_args.img_size // self.model_args.patch_size  # TODO: no need to use diff variables here: they must be the same
+        C = self.model_args.decoder_dim
         h = self.embedding(x)
+
+        # append mask tokens to sequence
+        mask_tokens = self.mask_token.repeat(B, D * H * W + 0 - h.shape[1], 1)
+        h_ = torch.cat([h[:, :, :], mask_tokens], dim=1)  # no cls token
+        h_ = h_.view([B, D * H * W, C])
+        h_ = torch.gather(h_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, h_.shape[2]))  # unshuffle
+        h = h_.view([B, D * H * W, C])
+
         for layer in self.layers.values():
             h = layer(h, freqs_cis)
 
@@ -514,6 +581,7 @@ class TransformerDecoder(nn.Module):
         output = self.output(h).float() if self.output else h
         return output
 
+    # do I still need the following method?
     @classmethod
     def from_model_args(cls, model_args: ModelArgs) -> "TransformerDecoder":
         """
@@ -533,17 +601,14 @@ class Transformer(nn.Module):
         super().__init__()
 
         self.model_args = model_args
+
         self.encoder = TransformerEncoder(model_args)
         self.decoder = TransformerDecoder(model_args)
         
-        self.register_buffer("freqs_cis", self._precompute_freqs_cis(), persistent=False)  # precompute pos embeddings (this will register self.freqs_cis)
-
-    def _precompute_freqs_cis(self) -> torch.Tensor:
-        return precompute_freqs_cis(
-            self.model_args.dim // self.model_args.n_heads,
-            (self.model_args.img_size // self.model_args.patch_size) ** 3,
-            self.model_args.rope_theta,
-        )
+    def init_weights(self):
+        """initialize parameters"""
+        self.encoder.init_weights()
+        self.decoder.init_weights()
 
     def patchify(self, imgs: torch.Tensor):
         """
@@ -558,7 +623,7 @@ class Transformer(nn.Module):
             x: (B, L, patch_size**3 * C) where L is the number of patches
         """
         B, C, D, H, W = imgs.shape
-        p = self.encoder.patch_size
+        p = self.model_args.patch_size
         assert D == H == W and D % p == 0
         d = h = w = D // p
 
@@ -590,11 +655,23 @@ class Transformer(nn.Module):
         """
         Forward pass through the full MAE model
         """
-        x, mask, ids_restore = self.encoder(imgs, self.freqs_cis, self.model_args.mask_ratio)
-        preds = self.decoder(x, self.freqs_cis, ids_restore)
+        x, mask, ids_restore = self.encoder(imgs, self.encoder.freqs_cis, self.model_args.mask_ratio)
+        preds = self.decoder(x, self.decoder.freqs_cis, ids_restore)
         targets = self.patchify(imgs)  # target patches
         loss = (preds - targets) ** 2  # MSE loss
         loss = loss.mean(dim=-1)  # (B, L) mean loss per patch
         mask = mask.view(loss.shape)
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
+
+    @classmethod
+    def from_model_args(cls, model_args: ModelArgs) -> "Transformer":
+        """
+        Initialize a Transformer model from a ModelArgs object.
+        Args:
+            model_args (ModelArgs): Model configuration arguments.
+
+        Returns:
+            Transformer: Transformer model.
+        """
+        return cls(model_args)
