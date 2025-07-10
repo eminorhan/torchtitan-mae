@@ -13,7 +13,7 @@ __all__ = ["Transformer"]
 
 llama3_configs = {
     "1B": ModelArgs(
-        dim=2048,
+        dim=3072,
         n_layers=16,
         n_heads=32,
         n_kv_heads=8,

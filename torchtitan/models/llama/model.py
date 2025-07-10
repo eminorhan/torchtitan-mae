@@ -20,10 +20,11 @@ import flash_attn_interface
 
 @dataclass
 class ModelArgs:
+    # encoder args
     img_size: int = 512
     patch_size: int = 8
     num_channels: int = 1
-    dim: int = 2048
+    dim: int = 3072
     n_layers: int = 16
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
