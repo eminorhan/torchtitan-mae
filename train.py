@@ -242,24 +242,6 @@ def main(job_config: JobConfig):
                     loss = model(batch)
                     loss.backward()
 
-            if train_state.step == 10:
-                from torchvision.utils import save_image
-                with torch.no_grad():
-                    _, comparison = model(batch, visualize=True)
-                    logger.info(f"comparison shape: {comparison.shape}")
-
-                    comparison = comparison[0].permute(0, 2, 1, 3, 4)
-
-                    a = comparison[0, ::64, :, :, :]
-                    b = comparison[1, ::64, :, :, :]
-                    c = comparison[2, ::64, :, :, :]
-
-                    vis = torch.cat((a, b, c), 0)
-                    vis = vis.expand(-1, 3, -1, -1)
-                    print(vis.shape)
-
-                    save_image(vis, f'sample.jpg', nrow=8, padding=0, normalize=False, scale_each=False)
-
             # clip gradients
             for m in model_parts:
                 torch.nn.utils.clip_grad_norm_(m.parameters(), job_config.training.max_norm, foreach=True)
