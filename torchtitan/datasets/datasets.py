@@ -15,9 +15,8 @@ from torchtitan.logging import logger
 class VolumeDataset(IterableDataset, Stateful):
     """PyTorch IterableDataset for generating random crops from volume data on-the-fly.
 
-    This dataset generates random matrices, simulating a stream of data for training.
-    It is stateful and supports checkpointing to ensure reproducibility in a
-    distributed environment.
+    This dataset generates random samples from EM volumes.It is stateful and supports checkpointing 
+    to ensure reproducibility in a distributed environment.
 
     Args:
         data_dir: The path to the top-level directory containing volume folders.
@@ -168,10 +167,7 @@ def build_data_loader(
     rank: int = 0,
 ) -> DPAwareDataLoader:
     """
-    Builds a data loader for distributed training.
-
-    This function can create a data loader for a Hugging Face dataset or a
-    dataset with synthetically generated data.
+    Builds a volume EM data loader for distributed training.
 
     Args:
         data_dir: The path to the top-level directory containing volume folders.
