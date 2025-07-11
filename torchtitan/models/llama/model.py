@@ -425,7 +425,7 @@ class TransformerEncoder(nn.Module):
         """
         Perform per-sample random masking by per-sample shuffling.
         Per-sample shuffling is done by argsort random noise.
-        x: [B, L, D], sequence, L is the total number of patches
+        x: [B, L, dim], sequence, L is the total number of patches
         """
         B, L, dim = x.shape  # batch, length, dim
         len_keep = int(L * (1 - mask_ratio))
@@ -534,7 +534,7 @@ class TransformerDecoder(nn.Module):
         """
         if self.embedding is not None:
             nn.init.normal_(self.embedding.weight)
-        nn.init.normal_(self.mask_token)
+        nn.init.constant_(self.mask_token, 0.5)
     
         for layer in self.layers.values():
             if layer is not None:
@@ -602,7 +602,6 @@ class Transformer(nn.Module):
         super().__init__()
 
         self.model_args = model_args
-
         self.encoder = TransformerEncoder(model_args)
         self.decoder = TransformerDecoder(model_args)
         
@@ -647,23 +646,44 @@ class Transformer(nn.Module):
             imgs: (B, C, D, H, W)
         """
         B, D, H, W, p, d, h, w = self.patch_info
-        x = x.reshape(shape=(B, d, h, w, p, p, p, C))
+        x = x.reshape(shape=(B, d, h, w, p, p, p, 1))  # TODO: should set last dimension to C for generality
         x = torch.einsum("nthwupqc->nctuhpwq", x)
-        imgs = x.reshape(shape=(B, C, D, H, W))
+        imgs = x.reshape(shape=(B, 1, D, H, W))
         return imgs
 
-    def forward(self, imgs: torch.Tensor):
+    def forward_loss(self, imgs: torch.Tensor, preds: torch.Tensor, mask: torch.Tensor, visualize: bool = False):
+        """
+        Compute MSE loss
+        """
+        targets = self.patchify(imgs)
+
+        if visualize:
+            self.targets = targets
+
+        loss = (preds - targets) ** 2
+        loss = loss.mean(dim=-1)  # [B, L], mean loss per patch
+        mask = mask.view(loss.shape)
+
+        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        return loss
+
+    def forward(self, imgs: torch.Tensor, visualize: bool = False):
         """
         Forward pass through the full MAE model
         """
         x, mask, ids_restore = self.encoder(imgs, self.encoder.freqs_cis, self.model_args.mask_ratio)
         preds = self.decoder(x, self.decoder.freqs_cis, ids_restore)
-        targets = self.patchify(imgs)  # target patches
-        loss = (preds - targets) ** 2  # MSE loss
-        loss = loss.mean(dim=-1)  # (B, L) mean loss per patch
-        mask = mask.view(loss.shape)
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-        return loss
+        loss = self.forward_loss(imgs, preds, mask, visualize)
+
+        if visualize:
+            B, D, H, W, p, d, h, w = self.patch_info
+
+            reconstruct = self.unpatchify(preds * mask.reshape(B, d * h * w, 1) + self.targets * (1 - mask.reshape(B, d * h * w, 1)))
+            masked = self.unpatchify(self.targets * (1 - mask.reshape(B, d * h * w, 1)))
+            comparison = torch.stack([self.unpatchify(self.targets), masked, reconstruct], dim=1)
+            return loss, comparison
+        else:
+            return loss
 
     @classmethod
     def from_model_args(cls, model_args: ModelArgs) -> "Transformer":

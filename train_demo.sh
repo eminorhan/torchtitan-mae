@@ -18,8 +18,8 @@ eval "$(/lustre/gale/stf218/scratch/emin/container/miniconda3/bin/conda shell.ba
 # set misc env vars
 export LOGLEVEL=INFO
 export OMP_NUM_THREADS=1
-export NCCL_NET_GDR_LEVEL=3   # can improve performance, but remove this setting if you encounter a hang/crash.
-export NCCL_CROSS_NIC=1       # on large systems, this nccl setting has been found to improve performance
+export NCCL_NET_GDR_LEVEL=3
+export NCCL_CROSS_NIC=1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export HF_HOME="/lustre/gale/stf218/scratch/emin/huggingface"
 export HF_DATASETS_CACHE="/lustre/gale/stf218/scratch/emin/huggingface"

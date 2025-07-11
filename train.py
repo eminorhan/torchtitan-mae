@@ -115,8 +115,8 @@ def main(job_config: JobConfig):
     float8_handler.convert_to_float8_training(model)
 
     # log model size
-    eff_seq_len = (1 - model_config.mask_ratio) * (model_config.img_size // model_config.patch_size) ** 3
-    num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model), model_config, eff_seq_len)  # is this still correct for MAE architecture?
+    eff_seq_len = int((1 - model_config.mask_ratio) * (model_config.img_size // model_config.patch_size) ** 3)
+    num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model), model_config, eff_seq_len)  # TODO: is this still ~correct for MAE architecture?
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
@@ -146,7 +146,7 @@ def main(job_config: JobConfig):
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
     logger.info(f"GPU memory usage for model: {gpu_mem_stats.max_reserved_gib:.2f}GiB ({gpu_mem_stats.max_reserved_pct:.2f}%)")
-    logger.info(f"Total number of parameters: {utils.get_num_params(model)})")
+    logger.info(f"Total number of parameters: {utils.get_num_params(model)}")
 
     # build optimizer after applying parallelisms to the model
     optimizers = build_optimizers(model_parts, job_config)
@@ -214,6 +214,7 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
+            ntokens_since_last_log += int(batch.shape[0] * (model_config.img_size // model_config.patch_size) ** 3)
             data_loading_times.append(time.perf_counter() - data_load_start)
 
             batch = batch.cuda()
@@ -238,8 +239,26 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context():
-                    loss = model(batch)  # loss.shape=(bs, seq_len, vocab_size)?
+                    loss = model(batch)
                     loss.backward()
+
+            if train_state.step == 10:
+                from torchvision.utils import save_image
+                with torch.no_grad():
+                    _, comparison = model(batch, visualize=True)
+                    logger.info(f"comparison shape: {comparison.shape}")
+
+                    comparison = comparison[0].permute(0, 2, 1, 3, 4)
+
+                    a = comparison[0, ::64, :, :, :]
+                    b = comparison[1, ::64, :, :, :]
+                    c = comparison[2, ::64, :, :, :]
+
+                    vis = torch.cat((a, b, c), 0)
+                    vis = vis.expand(-1, 3, -1, -1)
+                    print(vis.shape)
+
+                    save_image(vis, f'sample.jpg', nrow=8, padding=0, normalize=False, scale_each=False)
 
             # clip gradients
             for m in model_parts:
@@ -274,6 +293,12 @@ def main(job_config: JobConfig):
                 train_state.global_max_losses.append(global_max_loss)
 
                 time_delta = time.perf_counter() - time_last_log
+
+                # tokens per second, abbr. as wps by convention
+                wps = ntokens_since_last_log / (time_delta * parallel_dims.model_parallel_size)
+                # model FLOPS utilization; for its definition and calculation, please refer to the PaLM paper: https://arxiv.org/abs/2204.02311
+                mfu = 100 * num_flop_per_token * wps / gpu_peak_flops
+
                 time_end_to_end = time_delta / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
                 time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
@@ -283,6 +308,8 @@ def main(job_config: JobConfig):
                 metrics = {
                     "loss_metrics/global_avg_loss": global_avg_loss,
                     "loss_metrics/global_max_loss": global_max_loss,
+                    "wps": wps,
+                    "mfu(%)": mfu,
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
                     "time_metrics/data_loading(%)": time_data_loading_pct,
@@ -301,6 +328,8 @@ def main(job_config: JobConfig):
                     f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
                     f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
+                    f"{color.blue}wps: {round(wps):,}  "
+                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                 )
 
                 losses_since_last_log.clear()

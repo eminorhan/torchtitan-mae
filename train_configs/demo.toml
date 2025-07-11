@@ -16,7 +16,7 @@ save_tb_folder = "tb"
 
 [model]
 name = "llama3"
-flavor = "1B"
+flavor = "2B"
 
 [optimizer]
 name = "AdamW"
@@ -45,7 +45,7 @@ pipeline_parallel_degree = 1
 enable_checkpoint = false
 folder = "checkpoint"
 interval_type = "steps"
-interval = 100
+interval = 1000
 model_weights_only = false
 export_dtype = "bfloat16"
 async_mode = "async"  # ["disabled", "async", "async_with_pinned_mem"]

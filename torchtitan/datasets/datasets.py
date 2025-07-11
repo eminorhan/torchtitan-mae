@@ -11,9 +11,6 @@ from torch.utils.data import IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torchtitan.logging import logger
 
-from datasets import Dataset, load_dataset
-from datasets.distributed import split_dataset_by_node
-
 
 class VolumeDataset(IterableDataset, Stateful):
     """PyTorch IterableDataset for generating random crops from volume data on-the-fly.
@@ -141,7 +138,6 @@ class DPAwareDataLoader(StatefulDataLoader, Stateful):
     """
     A wrapper around the StatefulDataLoader that ensures that the state is stored only once per DP rank.
     """
-
     def __init__(self, dp_rank: int, dataset: IterableDataset, batch_size: int):
         super().__init__(dataset, batch_size)
         self._dp_rank = dp_rank
@@ -189,7 +185,6 @@ def build_data_loader(
     Returns:
         DPAwareDataLoader: A configured stateful data loader for distributed training.
     """
-    logger.info(f"Using synthetic dataset for rank {rank}.")
     dataset = VolumeDataset(
         data_dir=data_dir,
         subdir_name=subdir_name,
