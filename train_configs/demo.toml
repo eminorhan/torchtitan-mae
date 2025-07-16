@@ -23,8 +23,8 @@ name = "AdamW"
 lr = 3e-4
 
 [training]
-batch_size = 1
-warmup_steps = 1000  # lr scheduler warm up
+batch_size = 8
+warmup_steps = 300  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
 steps = 100000  # number of training steps
 data_parallel_replicate_degree = 1
@@ -35,7 +35,7 @@ data_dir = "/lustre/gale/stf218/scratch/emin/seg3d/data"
 subdir_name = "recon-1/em/fibsem-uint8"
 resolution = "s0"
 img_size = 512  # TODO: this should be under model
-patch_size = 8  # TODO: this should be under model
+patch_size = 16  # TODO: this should be under model
 mask_ratio = 0.95  # TODO: this should be under model
 
 [experimental]

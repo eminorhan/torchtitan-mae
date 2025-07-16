@@ -31,18 +31,18 @@ class ModelArgs:
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-6
-    rope_theta: float = 500_000
+    rope_theta: float = 1_000
     mask_ratio: float = 0.95
     depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
     # decoder args
     decoder_dim: int = 512
     decoder_n_layers: int = 4
-    decoder_n_heads: int = 32
+    decoder_n_heads: int = 16
     decoder_n_kv_heads: Optional[int] = None
     decoder_multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     decoder_ffn_dim_multiplier: Optional[float] = None
     decoder_norm_eps: float = 1e-6
-    decoder_rope_theta: float = 500_000  # TODO: use different rope_theta for encoder and decoder
+    decoder_rope_theta: float = 1_000
     decoder_depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
 
 
@@ -114,7 +114,8 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     """
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+
+    # freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
@@ -223,6 +224,8 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
+        freqs_cis = freqs_cis.view(bs, seqlen, -1, self.head_dim // 2)
+
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         # repeat k/v heads if n_kv_heads < n_heads
@@ -230,7 +233,7 @@ class Attention(nn.Module):
         values = repeat_kv(xv, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
         # FlashAttention-3
-        output, _ = flash_attn_interface.flash_attn_func(xq, xk, xv, causal=False)
+        output, _ = flash_attn_interface.flash_attn_func(xq, keys, values, causal=False)
         output = output.contiguous().view(bs, seqlen, -1)
 
         return self.wo(output)
@@ -462,7 +465,9 @@ class TransformerEncoder(nn.Module):
         B, L, dim = x.shape
 
         # masking: length -> length * mask_ratio
-        x, mask, ids_restore, ids_keep = self.random_mask(x, mask_ratio)  # TODO: do we need all of these outputs?
+        x, mask, ids_restore, ids_keep = self.random_mask(x, mask_ratio)
+        freqs_cis = freqs_cis.expand(B, -1, -1)  # expand along batch dimension
+        freqs_cis = torch.gather(freqs_cis, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, freqs_cis.shape[2]))
 
         for layer in self.layers.values():
             x = layer(x, freqs_cis)
@@ -534,7 +539,7 @@ class TransformerDecoder(nn.Module):
         """
         if self.embedding is not None:
             nn.init.normal_(self.embedding.weight)
-        nn.init.constant_(self.mask_token, 0.5)
+        nn.init.normal_(self.mask_token, std=0.02)
     
         for layer in self.layers.values():
             if layer is not None:
@@ -574,6 +579,8 @@ class TransformerDecoder(nn.Module):
         h_ = h_.view([B, D * H * W, C])
         h_ = torch.gather(h_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, h_.shape[2]))  # unshuffle
         h = h_.view([B, D * H * W, C])
+
+        freqs_cis = freqs_cis.expand(B, -1, -1)  # expand along batch dimension
 
         for layer in self.layers.values():
             h = layer(h, freqs_cis)
@@ -677,7 +684,7 @@ class Transformer(nn.Module):
 
         if visualize:
             B, D, H, W, p, d, h, w = self.patch_info
-
+            print("preds:", preds)
             reconstruct = self.unpatchify(preds * mask.reshape(B, d * h * w, 1) + self.targets * (1 - mask.reshape(B, d * h * w, 1)))
             masked = self.unpatchify(self.targets * (1 - mask.reshape(B, d * h * w, 1)))
             comparison = torch.stack([self.unpatchify(self.targets), masked, reconstruct], dim=1)

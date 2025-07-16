@@ -24,6 +24,7 @@ from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import models_parallelize_fns, models_pipelining_fns, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 
+from torchvision.utils import save_image
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
     @contextlib.contextmanager
@@ -241,6 +242,20 @@ def main(job_config: JobConfig):
                 with train_context():
                     loss = model(batch)
                     loss.backward()
+
+            with torch.no_grad():
+                _, comparison = model(batch, visualize=True)
+
+                comparison = comparison[0].permute(0, 2, 1, 3, 4)
+
+                a = comparison[0, ::64, :, :128, :128]
+                b = comparison[1, ::64, :, :128, :128]
+                c = comparison[2, ::64, :, :128, :128]
+
+                vis = torch.cat((a, b, c), 0)
+                vis = vis.expand(-1, 3, -1, -1)
+
+                save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
 
             # clip gradients
             for m in model_parts:

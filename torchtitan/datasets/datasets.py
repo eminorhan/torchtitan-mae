@@ -67,7 +67,7 @@ class VolumeDataset(IterableDataset, Stateful):
             A NumPy array containing the cropped data, or None if an error occurs.
         """         
         # randomly select one of the volumes
-        selected_volume = random.choice(self.volumes)
+        selected_volume = "jrc_mus-hippocampus-3"  # random.choice(self.volumes)
 
         # construct the path to the zarr array
         zarr_path = os.path.join(
@@ -101,7 +101,7 @@ class VolumeDataset(IterableDataset, Stateful):
             slice(start_y, start_y + cy),
             slice(start_x, start_x + cx)
         )
-        crop = zarr_array[crop_slice] / 255
+        crop = zarr_array[crop_slice] / 255 - 0.5
         crop = torch.from_numpy(crop).unsqueeze(0).to(torch.bfloat16)
         # print(f"Crop max/min/shape/dtype: {crop.max()}/{crop.min()}/{crop.shape}/{crop.dtype}")
         
