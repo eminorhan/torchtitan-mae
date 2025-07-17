@@ -243,19 +243,20 @@ def main(job_config: JobConfig):
                     loss = model(batch)
                     loss.backward()
 
-            with torch.no_grad():
-                _, comparison = model(batch, visualize=True)
+            if torch.distributed.get_rank() == 0:
+                with torch.no_grad():
+                    _, comparison = model(batch, visualize=True)
 
-                comparison = comparison[0].permute(0, 2, 1, 3, 4)
+                    comparison = comparison[0].permute(0, 2, 1, 3, 4)
 
-                a = comparison[0, ::64, :, :128, :128]
-                b = comparison[1, ::64, :, :128, :128]
-                c = comparison[2, ::64, :, :128, :128]
+                    a = comparison[0, ::(model_config.img_size // 8), :, :, :]
+                    b = comparison[1, ::(model_config.img_size // 8), :, :, :]
+                    c = comparison[2, ::(model_config.img_size // 8), :, :, :]
 
-                vis = torch.cat((a, b, c), 0)
-                vis = vis.expand(-1, 3, -1, -1)
+                    vis = torch.cat((a, b, c), 0)
+                    vis = vis.expand(-1, 3, -1, -1)
 
-                save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+                    save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
 
             # clip gradients
             for m in model_parts:
