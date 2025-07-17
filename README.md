@@ -21,12 +21,14 @@ The following table reports some basic throughput and mfu performance on 5 and 4
 
 | Training config. | tokens/s/GPU | mfu (%) | s/step | 
 |----------|---|---|---|
-| 5 nodes, 1% mask ratio | 2040 | 34 | 130 |
-| 5 nodes, 95% mask ratio | 12100 | 25 | 22 |
-| 40 nodes, 1% mask ratio | 1910 | 32 | 140 |
-| 40 nodes, 95% mask ratio | 11800 | 23 | 24 |
+| 5 nodes, 1% mask ratio (full AC) | 2040 | 34 | 130 |
+| 5 nodes, 95% mask ratio (full AC) | 12100 | 25 | 22 |
+| 5 nodes, 95% mask ratio (no AC) | 15000 | 30 | 18 |
+| 40 nodes, 1% mask ratio (full AC) | 1910 | 32 | 140 |
+| 40 nodes, 95% mask ratio (full AC) | 11800 | 23 | 24 |
+| 40 nodes, 95% mask ratio (no AC) | 13900 | 29 | 20 |
 
-Going from 5 nodes to 40 nodes, throughput per device (tokens/s/GPU) stays roughly the same, indicating near perfect weak scaling, which is nice to see.
+AC: activation checkpointing (note that for low masking ratios like 1%, turning off AC results in OOM errors). In general, AC incurs a ~25% reduction in throughput in exchange for a substantial reduction in GPU memory usage. We also observe that going from 5 nodes to 40 nodes, throughput per device (tokens/s/GPU) stays roughly the same, indicating near perfect weak scaling, which is nice to see.
 
 The SLURM batch script used for these experiments is [here](train_demo.sh) with the training configuration file available from [here](train_configs/demo.toml).
 

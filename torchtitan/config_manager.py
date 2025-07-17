@@ -97,6 +97,7 @@ class JobConfig:
         self.parser.add_argument("--training.patch_size", type=int, default=8, help="Patch size")
         self.parser.add_argument("--training.mask_ratio", type=float, default=0.95, help="Mask ratio")
         self.parser.add_argument("--training.batch_size", type=int, default=8, help="Batch size")
+        self.parser.add_argument("--training.num_workers", type=int, default=0, help="Number of data loading workers per DP rank.")
         self.parser.add_argument("--training.warmup_steps", type=int, default=1000, help="Steps for lr scheduler warmup, normally 1/5 of --training.steps")
         self.parser.add_argument("--training.max_norm", type=Union[float, int], default=1.0, help="Max norm for gradient clipping")
         self.parser.add_argument("--training.steps", type=int, default=100000, help="How many train steps to run")

@@ -31,18 +31,18 @@ class ModelArgs:
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-6
-    rope_theta: float = 1_000
+    rope_theta: float = 500_000
     mask_ratio: float = 0.95
     depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
     # decoder args
     decoder_dim: int = 512
     decoder_n_layers: int = 4
-    decoder_n_heads: int = 16
+    decoder_n_heads: int = 32
     decoder_n_kv_heads: Optional[int] = None
     decoder_multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     decoder_ffn_dim_multiplier: Optional[float] = None
     decoder_norm_eps: float = 1e-6
-    decoder_rope_theta: float = 1_000
+    decoder_rope_theta: float = 500_000
     decoder_depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
 
 

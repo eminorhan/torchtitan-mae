@@ -137,7 +137,7 @@ class DPAwareDataLoader(StatefulDataLoader, Stateful):
     """
     A wrapper around the StatefulDataLoader that ensures that the state is stored only once per DP rank.
     """
-    def __init__(self, dp_rank: int, dataset: IterableDataset, batch_size: int):
+    def __init__(self, dp_rank: int, dataset: IterableDataset, batch_size: int, num_workers: int):
         super().__init__(dataset, batch_size)
         self._dp_rank = dp_rank
         self._rank_id = f"dp_rank_{dp_rank}"
@@ -163,6 +163,7 @@ def build_data_loader(
     batch_size: int,
     crop_size: tuple[int, int, int], 
     resolution: str = "s0",
+    num_workers: int = 0,
     world_size: int = 1,
     rank: int = 0,
 ) -> DPAwareDataLoader:
@@ -190,4 +191,4 @@ def build_data_loader(
         rank=rank
     )
 
-    return DPAwareDataLoader(rank, dataset, batch_size=batch_size)
+    return DPAwareDataLoader(rank, dataset, batch_size=batch_size, num_workers=num_workers)

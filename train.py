@@ -96,6 +96,7 @@ def main(job_config: JobConfig):
         job_config.training.batch_size,
         (job_config.training.img_size, job_config.training.img_size, job_config.training.img_size),
         job_config.training.resolution,
+        job_config.training.num_workers,
         dp_degree,
         dp_rank,
     )
@@ -243,20 +244,20 @@ def main(job_config: JobConfig):
                     loss = model(batch)
                     loss.backward()
 
-            if torch.distributed.get_rank() == 0:
-                with torch.no_grad():
-                    _, comparison = model(batch, visualize=True)
+            # if torch.distributed.get_rank() == 0:
+            #     with torch.no_grad():
+            #         _, comparison = model(batch, visualize=True)
 
-                    comparison = comparison[0].permute(0, 2, 1, 3, 4)
+            #         comparison = comparison[0].permute(0, 2, 1, 3, 4)
 
-                    a = comparison[0, ::(model_config.img_size // 8), :, :, :]
-                    b = comparison[1, ::(model_config.img_size // 8), :, :, :]
-                    c = comparison[2, ::(model_config.img_size // 8), :, :, :]
+            #         a = comparison[0, ::(model_config.img_size // 8), :, :, :]
+            #         b = comparison[1, ::(model_config.img_size // 8), :, :, :]
+            #         c = comparison[2, ::(model_config.img_size // 8), :, :, :]
 
-                    vis = torch.cat((a, b, c), 0)
-                    vis = vis.expand(-1, 3, -1, -1)
+            #         vis = torch.cat((a, b, c), 0)
+            #         vis = vis.expand(-1, 3, -1, -1)
 
-                    save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+            #         save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
 
             # clip gradients
             for m in model_parts:

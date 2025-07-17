@@ -19,7 +19,7 @@ llama3_configs = {
         n_kv_heads=8,
         ffn_dim_multiplier=1.3,
         multiple_of=1024,
-        rope_theta=10_000_000,
+        rope_theta=500_000,
     ),
     "8B": ModelArgs(
         dim=4096,
@@ -28,6 +28,6 @@ llama3_configs = {
         n_kv_heads=8,
         ffn_dim_multiplier=1.3,
         multiple_of=1024,
-        rope_theta=10_000_000,
+        rope_theta=500_000,
     )
 }
