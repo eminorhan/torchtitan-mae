@@ -2,11 +2,11 @@
 
 #SBATCH --account=stf218-arch
 #SBATCH --partition=batch
-#SBATCH --nodes=5
+#SBATCH --nodes=4
 #SBATCH --cpus-per-task=288
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
-#SBATCH --time=1:00:00
+#SBATCH --time=6:00:00
 #SBATCH --job-name=train_demo
 #SBATCH --output=train_demo_%A_%a.out
 #SBATCH --array=0

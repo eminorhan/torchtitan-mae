@@ -30,7 +30,7 @@ from torchtitan.parallelisms.parallel_dims import ParallelDims
 from torchtitan.parallelisms.utils import check_strided_sharding_enabled
 
 
-def parallelize_llama(
+def parallelize_mae(
     model: nn.Module,
     world_mesh: DeviceMesh,
     parallel_dims: ParallelDims,

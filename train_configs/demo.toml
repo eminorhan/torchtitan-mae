@@ -15,18 +15,20 @@ enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]
-name = "llama3"
-flavor = "2B"
+size = "2B"  # "2B" or "8B"
+img_size = 256  
+patch_size = 16  
+mask_ratio = 0.01
 
 [optimizer]
 name = "AdamW"
 lr = 3e-4
 
 [training]
-batch_size = 1
+batch_size = 32
 warmup_steps = 100  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
-steps = 1000  # number of training steps
+steps = 5000  # number of training steps
 data_parallel_replicate_degree = 1
 data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
@@ -34,9 +36,6 @@ compile = false
 data_dir = "/lustre/gale/stf218/scratch/emin/seg3d/data" 
 subdir_name = "recon-1/em/fibsem-uint8"
 resolution = "s0"
-img_size = 512  # TODO: this should be under model
-patch_size = 8  # TODO: this should be under model
-mask_ratio = 0.95  # TODO: this should be under model
 
 [experimental]
 pipeline_parallel_degree = 1

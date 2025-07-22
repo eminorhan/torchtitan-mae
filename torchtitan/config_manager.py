@@ -45,9 +45,9 @@ class JobConfig:
 
     Each argument starts with <prefix>_ which is the section name in the toml file
     followed by name of the option in the toml file. For ex,
-    model.name translates to:
+    model.size translates to:
         [model]
-        name
+        size
     in the toml file
     """
 
@@ -81,8 +81,10 @@ class JobConfig:
         )
 
         # model configs
-        self.parser.add_argument("--model.name", type=str, default="llama", help="Which model to train")
-        self.parser.add_argument("--model.flavor", type=str, default="debugmodel", help="Which model config to train")
+        self.parser.add_argument("--model.size", type=str, default="2B", help="Model size")
+        self.parser.add_argument("--model.img_size", type=int, default=512, help="Size of volume crops")
+        self.parser.add_argument("--model.patch_size", type=int, default=8, help="Patch size")
+        self.parser.add_argument("--model.mask_ratio", type=float, default=0.95, help="Mask ratio")
 
         # optimizer configs
         self.parser.add_argument("--optimizer.name", type=str, default="AdamW", help="Optimizer to use")
@@ -93,9 +95,6 @@ class JobConfig:
         self.parser.add_argument("--training.data_dir", type=str, default="", help="The path to the top-level directory containing volume folders")
         self.parser.add_argument("--training.subdir_name", type=str, default="", help="Subdirectory name containing the EM data")
         self.parser.add_argument("--training.resolution", type=str, default="s0", help="Resolution at which to retrieve the data (default: 's0', i.e. highest resolution)")
-        self.parser.add_argument("--training.img_size", type=int, default=512, help="Size of volume crops")
-        self.parser.add_argument("--training.patch_size", type=int, default=8, help="Patch size")
-        self.parser.add_argument("--training.mask_ratio", type=float, default=0.95, help="Mask ratio")
         self.parser.add_argument("--training.batch_size", type=int, default=8, help="Batch size")
         self.parser.add_argument("--training.num_workers", type=int, default=0, help="Number of data loading workers per DP rank.")
         self.parser.add_argument("--training.warmup_steps", type=int, default=1000, help="Steps for lr scheduler warmup, normally 1/5 of --training.steps")
@@ -330,8 +329,7 @@ class JobConfig:
 
     def _validate_config(self) -> None:
         # TODO: Add more mandatory validations
-        assert self.model.name
-        assert self.model.flavor
+        assert self.model.size
 
     def parse_args_from_command_line(self, args_list) -> Tuple[argparse.Namespace, argparse.Namespace]:
         """

@@ -1,13 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-#
-# Llama 2 is licensed under the LLAMA 2 Community License,
-# Copyright (c) Meta Platforms, Inc. All Rights Reserved.
-
-
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -37,13 +27,35 @@ class ModelArgs:
     # decoder args
     decoder_dim: int = 512
     decoder_n_layers: int = 4
-    decoder_n_heads: int = 32
+    decoder_n_heads: int = 16
     decoder_n_kv_heads: Optional[int] = None
     decoder_multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     decoder_ffn_dim_multiplier: Optional[float] = None
     decoder_norm_eps: float = 1e-6
     decoder_rope_theta: float = 500_000
     decoder_depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
+
+
+model_configs = {
+    "2B": ModelArgs(
+        dim=3072,
+        n_layers=16,
+        n_heads=32,
+        n_kv_heads=8,
+        ffn_dim_multiplier=1.3,
+        multiple_of=1024,
+        rope_theta=1_000_000,
+    ),
+    "8B": ModelArgs(
+        dim=4096,
+        n_layers=32,
+        n_heads=32,
+        n_kv_heads=8,
+        ffn_dim_multiplier=1.3,
+        multiple_of=1024,
+        rope_theta=1_000_000,
+    )
+}
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 500_000) -> torch.Tensor:
@@ -355,7 +367,7 @@ class TransformerBlock(nn.Module):
         self.feed_forward.init_weights(self.weight_init_std)
 
 
-class TransformerEncoder(nn.Module):
+class Encoder(nn.Module):
     """
     Transformer encoder module
 
@@ -454,7 +466,7 @@ class TransformerEncoder(nn.Module):
 
     def forward(self, imgs: torch.Tensor, freqs_cis: torch.Tensor, mask_ratio: float):
         """
-        Perform a forward pass through the TransformerEncoder model.
+        Perform a forward pass through the Encoder model.
         Args:
             imgs (torch.Tensor): Input images.
 
@@ -477,19 +489,19 @@ class TransformerEncoder(nn.Module):
 
     # do I still need the following method?
     @classmethod
-    def from_model_args(cls, model_args: ModelArgs) -> "TransformerEncoder":
+    def from_model_args(cls, model_args: ModelArgs) -> "Encoder":
         """
-        Initialize a TransformerEncoder model from a ModelArgs object.
+        Initialize a Encoder model from a ModelArgs object.
         Args:
             model_args (ModelArgs): Model configuration arguments.
 
         Returns:
-            TransformerEncoder: TransformerEncoder model.
+            Encoder: Encoder model.
         """
         return cls(model_args)
 
 
-class TransformerDecoder(nn.Module):
+class Decoder(nn.Module):
 
     def __init__(self, model_args: ModelArgs):
         super().__init__()
@@ -561,12 +573,12 @@ class TransformerDecoder(nn.Module):
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor, ids_restore: torch.Tensor):
         """
-        Perform a forward pass through the TransformerDecoder model.
+        Perform a forward pass through the Decoder model.
         Args:
             x (torch.Tensor): tokens input to decoder.
 
         Returns:
-            torch.Tensor: Output logits after applying the TransformerDecoder model.
+            torch.Tensor: Output logits after applying the Decoder model.
         """
         B = x.shape[0]  # batch size
         D = H = W = self.model_args.img_size // self.model_args.patch_size  # TODO: no need to use diff variables here: they must be the same
@@ -591,26 +603,26 @@ class TransformerDecoder(nn.Module):
 
     # do I still need the following method?
     @classmethod
-    def from_model_args(cls, model_args: ModelArgs) -> "TransformerDecoder":
+    def from_model_args(cls, model_args: ModelArgs) -> "Decoder":
         """
-        Initialize a TransformerDecoder model from a ModelArgs object.
+        Initialize a Decoder model from a ModelArgs object.
         Args:
             model_args (ModelArgs): Model configuration arguments.
 
         Returns:
-            TransformerDecoder: TransformerDecoder model.
+            Decoder: Decoder model.
         """
         return cls(model_args)
 
 
 # TODO: consolidate all architectural parameters under model_args?
-class Transformer(nn.Module):
+class MaskedAutoencoder(nn.Module):
     def __init__(self, model_args: ModelArgs):
         super().__init__()
 
         self.model_args = model_args
-        self.encoder = TransformerEncoder(model_args)
-        self.decoder = TransformerDecoder(model_args)
+        self.encoder = Encoder(model_args)
+        self.decoder = Decoder(model_args)
         
     def init_weights(self):
         """initialize parameters"""
@@ -667,6 +679,7 @@ class Transformer(nn.Module):
         if visualize:
             self.targets = targets
 
+        #print(f"preds: {preds}; targets: {targets}")
         loss = (preds - targets) ** 2
         loss = loss.mean(dim=-1)  # [B, L], mean loss per patch
         mask = mask.view(loss.shape)
@@ -684,7 +697,6 @@ class Transformer(nn.Module):
 
         if visualize:
             B, D, H, W, p, d, h, w = self.patch_info
-            print("preds:", preds)
             reconstruct = self.unpatchify(preds * mask.reshape(B, d * h * w, 1) + self.targets * (1 - mask.reshape(B, d * h * w, 1)))
             masked = self.unpatchify(self.targets * (1 - mask.reshape(B, d * h * w, 1)))
             comparison = torch.stack([self.unpatchify(self.targets), masked, reconstruct], dim=1)
@@ -693,13 +705,13 @@ class Transformer(nn.Module):
             return loss
 
     @classmethod
-    def from_model_args(cls, model_args: ModelArgs) -> "Transformer":
+    def from_model_args(cls, model_args: ModelArgs) -> "MaskedAutoencoder":
         """
-        Initialize a Transformer model from a ModelArgs object.
+        Initialize a MaskedAutoencoder model from a ModelArgs object.
         Args:
             model_args (ModelArgs): Model configuration arguments.
 
         Returns:
-            Transformer: Transformer model.
+            MaskedAutoencoder: MaskedAutoencoder model.
         """
         return cls(model_args)

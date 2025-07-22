@@ -19,9 +19,9 @@ from torchtitan.datasets import build_data_loader
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_cls, models_config
+from torchtitan.model import MaskedAutoencoder, model_configs
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
-from torchtitan.parallelisms import models_parallelize_fns, models_pipelining_fns, ParallelDims
+from torchtitan.parallelisms import parallelize_mae, pipeline_mae, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 
 from torchvision.utils import save_image
@@ -87,14 +87,12 @@ def main(job_config: JobConfig):
     if parallel_dims.pp_enabled:
         pp_mesh = world_mesh["pp"]
 
-    model_name = job_config.model.name
-
     # build dataloader
     data_loader = build_data_loader(
         job_config.training.data_dir,
         job_config.training.subdir_name,
         job_config.training.batch_size,
-        (job_config.training.img_size, job_config.training.img_size, job_config.training.img_size),
+        (job_config.model.img_size, job_config.model.img_size, job_config.model.img_size),
         job_config.training.resolution,
         job_config.training.num_workers,
         dp_degree,
@@ -102,14 +100,13 @@ def main(job_config: JobConfig):
     )
 
     # build model (using meta init)
-    model_cls = model_name_to_cls[model_name]
-    model_config = models_config[model_name][job_config.model.flavor]
-    model_config.img_size = job_config.training.img_size
-    model_config.patch_size = job_config.training.patch_size
-    model_config.mask_ratio = job_config.training.mask_ratio
+    model_config = model_configs[job_config.model.size]
+    model_config.img_size = job_config.model.img_size
+    model_config.patch_size = job_config.model.patch_size
+    model_config.mask_ratio = job_config.model.mask_ratio
 
     with torch.device("meta"):
-        model = model_cls.from_model_args(model_config)
+        model = MaskedAutoencoder.from_model_args(model_config)
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -123,19 +120,19 @@ def main(job_config: JobConfig):
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
         # apply PT-D Pipeline Parallel
-        pp_schedule, model_parts = models_pipelining_fns[model_name](model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn)
+        pp_schedule, model_parts = pipeline_mae(model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn)
 
         # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
         # We need to iterate through model_parts to apply SPMD parallelisms, compilation, optimizer, and checkpointing
         for m in model_parts:
             # apply SPMD-style PT-D techniques
-            models_parallelize_fns[model_name](m, world_mesh, parallel_dims, job_config)
+            parallelize_mae(m, world_mesh, parallel_dims, job_config)
             m.to_empty(device="cuda")
             m.init_weights()
             m.train()
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-        models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
+        parallelize_mae(model, world_mesh, parallel_dims, job_config)
 
         # move sharded model to CPU/GPU and initialize weights via DTensor
         init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
@@ -222,6 +219,24 @@ def main(job_config: JobConfig):
             batch = batch.cuda()
             optimizers.zero_grad()
 
+            model.eval()
+            with torch.no_grad():
+                _, comparison = model(batch, visualize=True)
+
+                if torch.distributed.get_rank() == 0:
+
+                    comparison = comparison[0].permute(0, 2, 1, 3, 4)
+
+                    a = comparison[0, ::(model_config.img_size // 8), :, :, :]
+                    b = comparison[1, ::(model_config.img_size // 8), :, :, :]
+                    c = comparison[2, ::(model_config.img_size // 8), :, :, :]
+
+                    vis = torch.cat((a, b, c), 0)
+                    vis = vis.expand(-1, 3, -1, -1)
+
+                    save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+            model.train()
+            
             if parallel_dims.pp_enabled:
                 # NOTE: PP isn't supported at the moment.
                 # Pipeline Parallel forward / backward inside step() call
@@ -243,22 +258,7 @@ def main(job_config: JobConfig):
                 with train_context():
                     loss = model(batch)
                     loss.backward()
-
-            # if torch.distributed.get_rank() == 0:
-            #     with torch.no_grad():
-            #         _, comparison = model(batch, visualize=True)
-
-            #         comparison = comparison[0].permute(0, 2, 1, 3, 4)
-
-            #         a = comparison[0, ::(model_config.img_size // 8), :, :, :]
-            #         b = comparison[1, ::(model_config.img_size // 8), :, :, :]
-            #         c = comparison[2, ::(model_config.img_size // 8), :, :, :]
-
-            #         vis = torch.cat((a, b, c), 0)
-            #         vis = vis.expand(-1, 3, -1, -1)
-
-            #         save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
-
+            
             # clip gradients
             for m in model_parts:
                 torch.nn.utils.clip_grad_norm_(m.parameters(), job_config.training.max_norm, foreach=True)
