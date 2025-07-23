@@ -7,11 +7,9 @@
 
 from torchtitan.parallelisms.parallel_dims import ParallelDims
 from torchtitan.parallelisms.parallelize_mae import parallelize_mae
-from torchtitan.parallelisms.pipeline_mae import pipeline_mae
 
 
 __all__ = [
     "parallelize_mae",
-    "pipeline_mae",
     "ParallelDims",
 ]

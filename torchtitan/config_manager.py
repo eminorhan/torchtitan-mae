@@ -73,12 +73,7 @@ class JobConfig:
         self.parser.add_argument("--metrics.enable_color_printing", default=False, action="store_true", help="Whether to enable color printing")
         self.parser.add_argument("--metrics.enable_tensorboard", action="store_true", help="Whether to log metrics to TensorBoard")
         self.parser.add_argument("--metrics.save_tb_folder", type=str, default="tb", help="Folder to dump TensorBoard states")
-        self.parser.add_argument("--metrics.rank_0_only", default=True, action="store_true", help="""
-                Whether to save TensorBoard metrics only for rank 0 or for all ranks.
-                When pipeline_parallel_degree is > 1, this option uses the 0th rank of the last stage pipeline group,
-                which is the only stage that computes loss metrics.
-            """,
-        )
+        self.parser.add_argument("--metrics.rank_0_only", default=True, action="store_true", help="Whether to save TensorBoard metrics only for rank 0 or for all ranks.")
 
         # model configs
         self.parser.add_argument("--model.size", type=str, default="2B", help="Model size")
@@ -100,176 +95,30 @@ class JobConfig:
         self.parser.add_argument("--training.warmup_steps", type=int, default=1000, help="Steps for lr scheduler warmup, normally 1/5 of --training.steps")
         self.parser.add_argument("--training.max_norm", type=Union[float, int], default=1.0, help="Max norm for gradient clipping")
         self.parser.add_argument("--training.steps", type=int, default=100000, help="How many train steps to run")
-        self.parser.add_argument(
-            "--training.data_parallel_replicate_degree",
-            type=int,
-            default=1,
-            help="""
-            The `data_parallel_replicate_degree` argument specifies the degree of
-            data parallelism for weight replication. When this value is greater
-            than 1, weights will be replicated across `data_parallel_replicate_degree`
-            ranks. If `data_parallel_shard_degree` is also greater than 1, the parallelism
-            method used is HSDP (Hybrid Sharded Data Parallelism). Otherwise, the
-            parallelism method used is DDP (Distributed Data Parallelism).
-            1 means disabled.""",
-        )
-        self.parser.add_argument(
-            "--training.data_parallel_shard_degree",
-            type=int,
-            default=-1,
-            help="""
-            The `data_parallel_shard_degree` argument specifies the degree of data
-            parallelism for weight sharding. When this value is greater than 1, weights
-            will be sharded across `data_parallel_shard_degree` ranks. If
-            `data_parallel_replicate_degree` is also greater than 1, the parallelism
-            method used is HSDP (Hybrid Sharded Data Parallelism).  Otherwise, the
-            parallelism method used is FSDP (Fully Sharded Data Parallelism).
-
-            -1 means leftover ranks will be used (After DP_REPLICATE/SP/PP). Note that
-            only one of `data_parallel_replicate_degree` and `data_parallel_shard_degree`
-            can be negative.
-            1 means disabled.""",
-        )
+        self.parser.add_argument("--training.data_parallel_replicate_degree", type=int, default=1, help="Degree of data parallelism for weight replication. 1 means disabled. Uses HSDP if both dp_replicate and dp_shard > 1.")
+        self.parser.add_argument("--training.data_parallel_shard_degree", type=int, default=-1, help="Degree of data parallelism for weight sharding. 1 means disabled. -1 means leftover ranks will be used. Uses HSDP if both dp_replicate and dp_shard > 1.")
         self.parser.add_argument("--training.tensor_parallel_degree", type=int, default=1, help="Tensor Parallelism degree. 1 means disabled.")
         self.parser.add_argument("--training.enable_loss_parallel", default=True, action="store_true", help="Whether to apply loss parallel when sequence parallel is enabled")
-        self.parser.add_argument("--experimental.enable_async_tensor_parallel", default=False, action="store_true", help="Whether to apply async tensor parallel (currently only effective when compile is enabled)")
-        self.parser.add_argument(
-            "--experimental.pipeline_parallel_degree",
-            type=int,
-            default=1,
-            help="""
-                Pipeline Parallelism degree, or number of ranks. 1 means disabled.
-                If using looped schedules, this still specifies the number of physical ranks, not the number
-                of stages.  Stages per rank are inferred from split points degree, and schedule.""",
-        )
-        self.parser.add_argument(
-            "--experimental.pipeline_parallel_split_points",
-            type=string_list,
-            nargs="+",
-            default=[],
-            help="""
-                Specify comma-separated names of modules to use as the beginning of a split point.
-
-                e.g. "layers.0,layers.2" will cause the model to be split into 3 stages,
-                the first containing all the layers up to layers.0,
-                the second containing layers.0 and up to layers.2,
-                the third containing layers.2 and all the remaining layers.
-
-                Note: fully-automated splitting may be enabled in the future,
-                but currently the split points must be specified manually.""",
-        )
-        self.parser.add_argument(
-            "--experimental.pipeline_parallel_schedule",
-            type=str,
-            choices=["1f1b", "gpipe", "interleaved_1f1b", "flexible_interleaved_1f1b"],
-            default="1f1b",
-            help="""
-                Specify the Pipeline Parallel schedule to use.
-
-                The schedule must be compatible with the split points and stages_per_rank.
-
-                Looped schedules (e.g. interleaved_1f1b) require specifying pipeline_paralle_degree = number of ranks,
-                and split_points = number of stages - 1""",
-        )
-        self.parser.add_argument(
-            "--experimental.pipeline_parallel_microbatches",
-            type=int,
-            default=None,
-            help="""
-                How many microbatches to split the global training batch into when using pipeline parallelism.
-
-                The global training batch size must be evenly divisible by the number of microbatches.
-
-                The default value will be the number of pipeline stages, if unspecified.
-            """,
-        )
-        self.parser.add_argument(
-            "--experimental.enable_compiled_autograd",
-            action="store_true",
-            help="Enable CompiledAutograd to compile the backward.",
-        )
-        self.parser.add_argument(
-            "--training.mixed_precision_param",
-            type=str,
-            default="bfloat16",
-            choices=["bfloat16", "float32"],
-            help="""
-                torch dtype to use for parameters when applying mixed precision via FSDP.
-                This feature only takes effect when data_parallel_degree > 1
-            """,
-        )
-        self.parser.add_argument(
-            "--training.mixed_precision_reduce",
-            type=str,
-            default="float32",
-            choices=["float32"],
-            help="""
-                torch dtype to use for reductions when applying mixed precision via FSDP.
-                This feature only takes effect when data_parallel_degree > 1
-            """,
-        )
+        self.parser.add_argument("--training.mixed_precision_param", type=str, default="bfloat16", choices=["bfloat16", "float32"], help="torch dtype to use for parameters when applying mixed precision via FSDP. This feature only takes effect when data_parallel_degree > 1")
+        self.parser.add_argument("--training.mixed_precision_reduce", type=str, default="float32", choices=["float32"], help="torch dtype to use for reductions when applying mixed precision via FSDP. This feature only takes effect when data_parallel_degree > 1")
         self.parser.add_argument("--training.compile", action="store_true", help="Whether to compile the model")
         self.parser.add_argument("--training.gc_freq", type=int, default=50, help="Python garbage control scheduling interval, in steps")
         self.parser.add_argument("--training.seed", type=int, default=None, help="Implement reproducibility by setting a Python, PyTorch and CUDA seed")
         self.parser.add_argument("--training.shuffle_seed", type=int, default=None, help="Random seed to shuffle datasets")
+
+        # experimental configs
+        self.parser.add_argument("--experimental.enable_async_tensor_parallel", default=False, action="store_true", help="Whether to apply async tensor parallel (currently only effective when compile is enabled)")
+        self.parser.add_argument("--experimental.enable_compiled_autograd", action="store_true", help="Enable CompiledAutograd to compile the backward.")
 
         # checkpointing configs
         self.parser.add_argument("--checkpoint.enable_checkpoint", action="store_true", help="Whether to enable checkpoint")
         self.parser.add_argument("--checkpoint.folder", type=str, default="checkpoint", help="The folder to store the checkpoints. When enable_checkpoint is set to true, checkpoints will be in {--job.dump_folder}/{--checkpoint.folder}.")
         self.parser.add_argument("--checkpoint.interval_type", type=str, default="steps", help="Checkpointing interval unit of measurement ['step', 'seconds']")
         self.parser.add_argument("--checkpoint.interval", type=int, default=500, help="Checkpointing interval, in steps or seconds depending on --checkpoint.interval_type")
-        self.parser.add_argument(
-            "--checkpoint.model_weights_only",
-            action="store_true",
-            help="""
-                When model_weights_only=True, only model weights will be saved at the end of training.
-                With this, checkpoints can be loaded using `torch.load(..., weights_only=True)` after conversion.
-                When model_weights_only=False, the full checkpoint will be saved.
-                A full checkpoint includes model, optimizer and train_state, which can be used to resume training.
-                The default value is false.
-            """,
-        )
-        self.parser.add_argument(
-            "--checkpoint.export_dtype",
-            type=str,
-            default="float32",
-            choices=["float16", "bfloat16", "float32"],
-            help="""
-                Converts to the specified precision when training completes and model_weights_only=true.
-                Currently supports float32, float16, and bfloat16.
-                The default value is float32.
-            """,
-        )
-        self.parser.add_argument(
-            "--checkpoint.create_seed_checkpoint",
-            action="store_true",
-            help="""
-                Initializes the full model without applying parallelisms, and then saves it as a seed checkpoint.
-                Note: requires user to call train.py without specifying any parallelisms, e.g. NGPU=1.
-                Could be implemented as a separate script, but this way shares more code.
-            """,
-        )
-        self.parser.add_argument(
-            "--checkpoint.async_mode",
-            type=str,
-            default="disabled",
-            help="""
-                Which async checkpoint mode to use. Currently there are 3 different modes.
-                1. "disabled": synchronized checkpointing will be used.
-                2. "async": torch.distributed.checkpoint.async_save will be used.
-                3. "async_with_pinned_mem": this option utilizes a dedicated pinned memory
-                   space and creates a separate process for faster GPU->CPU transfer
-                   performance and eliminating GIL contention. The cost is increased CPU
-                   memory usage. If insufficient CPU memory is available, performance may
-                   degrade due to memory paging. For most users, "async" should suffice as
-                   the performance overhead is typically small (on the order of tens of
-                   seconds) compared to checkpointing frequency. This mode can be employed
-                   to pursue near-zero checkpointing times (e.g., < 1 second) given
-                   appropriate hardware support such as ample CPU memory and fast PCIe.
-
-                "disabled" is the default mode.
-            """,
-        )
+        self.parser.add_argument("--checkpoint.model_weights_only", action="store_true", help="When model_weights_only=True, only model weights will be saved at the end of training. With this, checkpoints can be loaded using `torch.load(..., weights_only=True)` after conversion")
+        self.parser.add_argument("--checkpoint.export_dtype", type=str, default="float32", choices=["float16", "bfloat16", "float32"], help="Converts to the specified precision when training completes and model_weights_only=true. Currently supports float32, float16, and bfloat16. The default value is float32")
+        self.parser.add_argument("--checkpoint.create_seed_checkpoint", action="store_true", help="Initializes the full model without applying parallelisms, and then saves it as a seed checkpoint. Note: requires user to call train.py without specifying any parallelisms, e.g. NGPU=1.")
+        self.parser.add_argument("--checkpoint.async_mode", type=str, default="disabled", help="Which async checkpoint mode to use: 'disabled': synchronized checkpointing; 'async': torch.distributed.checkpoint.async_save will be used; 'async_with_pinned_mem': this option utilizes a dedicated pinned memory space and creates a separate process for faster GPU->CPU transfer")
         self.parser.add_argument("--checkpoint.keep_latest_k", type=int, default=0, help="Keeps only the latest k checkpoints, and purging older ones. If 0, keep all checkpoints. 0 is the default value.")
 
         # activation checkpointing configs

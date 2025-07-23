@@ -27,7 +27,6 @@ from torch.distributed.tensor.parallel import (
 from torchtitan.config_manager import JobConfig, TORCH_DTYPE_MAP
 from torchtitan.logging import logger
 from torchtitan.parallelisms.parallel_dims import ParallelDims
-from torchtitan.parallelisms.utils import check_strided_sharding_enabled
 
 
 def parallelize_mae(
@@ -76,8 +75,7 @@ def parallelize_mae(
                 dp_mesh,
                 param_dtype=TORCH_DTYPE_MAP[job_config.training.mixed_precision_param],
                 reduce_dtype=TORCH_DTYPE_MAP[job_config.training.mixed_precision_reduce],
-                tp_enabled=parallel_dims.tp_enabled,
-                pp_enabled=parallel_dims.pp_enabled,
+                tp_enabled=parallel_dims.tp_enabled
             )
             
             if parallel_dims.dp_replicate_enabled:
@@ -305,8 +303,7 @@ def apply_fsdp(
     dp_mesh: DeviceMesh,
     param_dtype: torch.dtype,
     reduce_dtype: torch.dtype,
-    tp_enabled: bool,
-    pp_enabled: bool,
+    tp_enabled: bool
 ):
     """
     Apply data parallelism to the model. FSDP2 is used here.
@@ -314,32 +311,10 @@ def apply_fsdp(
     mp_policy = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=reduce_dtype)
     fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
 
-    # TODO: remove this check once PyTorch 2.5 is released. We can safely assume
-    # that users won't use a nightly build which is older than 20240809 by then.
-    if tp_enabled:
-        # check if strided sharding is enabled, which is necessary for 2D/3D DCP
-        check_strided_sharding_enabled()
-
     for enc_layer_id, enc_transformer_block in model.encoder.layers.items():
-        if pp_enabled:
-            # For PP, do not reshard after forward to avoid per-microbatch
-            # all-gathers, which can be expensive and non-overlapped
-            reshard_after_forward = False
-        else:
-            # As an optimization, do not reshard after forward for the last
-            # transformer block since FSDP would prefetch it immediately
-            reshard_after_forward = int(enc_layer_id) < len(model.encoder.layers) - 1
         fully_shard(enc_transformer_block, **fsdp_config, reshard_after_forward=False)
         
     for dec_layer_id, dec_transformer_block in model.decoder.layers.items():
-        if pp_enabled:
-            # For PP, do not reshard after forward to avoid per-microbatch
-            # all-gathers, which can be expensive and non-overlapped
-            reshard_after_forward = False
-        else:
-            # As an optimization, do not reshard after forward for the last
-            # transformer block since FSDP would prefetch it immediately
-            reshard_after_forward = int(dec_layer_id) < len(model.decoder.layers) - 1
         fully_shard(dec_transformer_block, **fsdp_config, reshard_after_forward=False)
     
     fully_shard(model, **fsdp_config, reshard_after_forward=False)

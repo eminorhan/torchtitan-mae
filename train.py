@@ -21,10 +21,11 @@ from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
 from torchtitan.model import MaskedAutoencoder, model_configs
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
-from torchtitan.parallelisms import parallelize_mae, pipeline_mae, ParallelDims
+from torchtitan.parallelisms import parallelize_mae, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 
 from torchvision.utils import save_image
+
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
     @contextlib.contextmanager
@@ -62,7 +63,6 @@ def main(job_config: JobConfig):
         dp_shard=job_config.training.data_parallel_shard_degree,
         dp_replicate=job_config.training.data_parallel_replicate_degree,
         tp=job_config.training.tensor_parallel_degree,
-        pp=job_config.experimental.pipeline_parallel_degree,
         world_size=world_size,
         enable_loss_parallel=job_config.training.enable_loss_parallel,
     )
@@ -83,9 +83,6 @@ def main(job_config: JobConfig):
         dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
     else:
         dp_degree, dp_rank = 1, 0
-
-    if parallel_dims.pp_enabled:
-        pp_mesh = world_mesh["pp"]
 
     # build dataloader
     data_loader = build_data_loader(
@@ -117,31 +114,16 @@ def main(job_config: JobConfig):
     eff_seq_len = int((1 - model_config.mask_ratio) * (model_config.img_size // model_config.patch_size) ** 3)
     num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model), model_config, eff_seq_len)  # TODO: is this still ~correct for MAE architecture?
 
-    # apply parallelisms and initialization
-    if parallel_dims.pp_enabled:
-        # apply PT-D Pipeline Parallel
-        pp_schedule, model_parts = pipeline_mae(model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn)
+    # parallelization: apply PT-D TP, activation checkpointing, torch.compile, DP
+    parallelize_mae(model, world_mesh, parallel_dims, job_config)
 
-        # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
-        # We need to iterate through model_parts to apply SPMD parallelisms, compilation, optimizer, and checkpointing
-        for m in model_parts:
-            # apply SPMD-style PT-D techniques
-            parallelize_mae(m, world_mesh, parallel_dims, job_config)
-            m.to_empty(device="cuda")
-            m.init_weights()
-            m.train()
-    else:
-        # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-        parallelize_mae(model, world_mesh, parallel_dims, job_config)
+    # move sharded model to CPU/GPU and initialize weights via DTensor
+    init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
+    model.to_empty(device=init_device)
+    model.init_weights()
+    model.train()
 
-        # move sharded model to CPU/GPU and initialize weights via DTensor
-        init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
-
-        model.to_empty(device=init_device)
-        model.init_weights()
-        model.train()
-
-        model_parts = [model]
+    model_parts = [model]
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
     logger.info(f"GPU memory usage for model: {gpu_mem_stats.max_reserved_gib:.2f}GiB ({gpu_mem_stats.max_reserved_pct:.2f}%)")
@@ -170,10 +152,6 @@ def main(job_config: JobConfig):
         return
 
     checkpoint_loaded = checkpoint.load()
-
-    if parallel_dims.pp_enabled and not checkpoint_loaded:
-        # TODO: fix this by allowing each rank to set their own seed
-        logger.warning("Pipeline Parallelism is being used without a seed checkpoint. All the substages will be initialized with random weights with same RNG state which can affect convergence.")
 
     metric_logger = build_metric_logger(job_config, parallel_dims)
 
@@ -219,6 +197,7 @@ def main(job_config: JobConfig):
             batch = batch.cuda()
             optimizers.zero_grad()
 
+            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
             model.eval()
             with torch.no_grad():
                 _, comparison = model(batch, visualize=True)
@@ -236,28 +215,12 @@ def main(job_config: JobConfig):
 
                     save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
             model.train()
+            # ###### end visualize
             
-            if parallel_dims.pp_enabled:
-                # NOTE: PP isn't supported at the moment.
-                # Pipeline Parallel forward / backward inside step() call
-                is_last_stage = pp_mesh.get_local_rank() == pp_mesh.size() - 1
-
-                with train_context():
-                    if pp_mesh.get_local_rank() == 0:
-                        pp_schedule.step(batch)
-                    elif is_last_stage:
-                        losses = []
-                        pp_schedule.step(losses=losses)  
-                    else:
-                        pp_schedule.step()
-
-                # accumulate losses across pipeline microbatches
-                loss = torch.mean(torch.stack(losses)) if is_last_stage else torch.Tensor([-1.0])
-            else:
-                # Non-PP forward / backward
-                with train_context():
-                    loss = model(batch)
-                    loss.backward()
+            # run forward / backward
+            with train_context():
+                loss = model(batch)
+                loss.backward()
             
             # clip gradients
             for m in model_parts:
