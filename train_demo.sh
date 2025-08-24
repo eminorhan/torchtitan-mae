@@ -12,15 +12,18 @@
 #SBATCH --array=0
 
 # activate venv
-# source /lustre/gale/stf218/scratch/emin/myvenv/bin/activate
-eval "$(/lustre/gale/stf218/scratch/emin/container/miniconda3/bin/conda shell.bash hook)"
+source /lustre/gale/stf218/scratch/emin/ncclvenv/bin/activate
 
 # set misc env vars
+export LD_LIBRARY_PATH=/lustre/gale/stf218/scratch/emin/aws-ofi-nccl-1.14.0/lib:$LD_LIBRARY_PATH  # enable aws-ofi-nccl
+export NCCL_NET=ofi
+export FI_PROVIDER=cxi
 export LOGLEVEL=INFO
 export OMP_NUM_THREADS=1
+export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
+export GLOO_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
 export NCCL_NET_GDR_LEVEL=3
 export NCCL_CROSS_NIC=1
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export HF_HOME="/lustre/gale/stf218/scratch/emin/huggingface"
 export HF_DATASETS_CACHE="/lustre/gale/stf218/scratch/emin/huggingface"
 export TRITON_CACHE_DIR="/lustre/gale/stf218/scratch/emin/triton"
