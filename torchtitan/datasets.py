@@ -1,194 +1,225 @@
-import os
+import os, time, uuid, json
 import random
 import pickle
 import zarr
 import numpy as np
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from torch.distributed.checkpoint.stateful import Stateful
-from torch.utils.data import IterableDataset
-from torchdata.stateful_dataloader import StatefulDataLoader
+import torch.distributed as dist
+from torch.utils.data import IterableDataset, DataLoader
 from torchtitan.logging import logger
+from multiprocessing.shared_memory import SharedMemory
 
+BASE_DIR = "/lustre/gale/stf218/scratch/emin/seg3d/data"
+_volumes_list = [
+    os.path.join(BASE_DIR, "jrc_mus-granule-neurons-1/jrc_mus-granule-neurons-1.zarr/recon-2/em/fibsem-int16/s0"),
+    os.path.join(BASE_DIR, "jrc_mus-granule-neurons-2/jrc_mus-granule-neurons-2.zarr/recon-2/em/fibsem-int16/s0"),
+    os.path.join(BASE_DIR, "jrc_mus-granule-neurons-3/jrc_mus-granule-neurons-3.zarr/recon-2/em/fibsem-int16/s0"),
+    os.path.join(BASE_DIR, "jrc_mus-hippocampus-2/jrc_mus-hippocampus-2.zarr/recon-1/em/fibsem-uint8/s0"),
+    os.path.join(BASE_DIR, "jrc_mus-hippocampus-3/jrc_mus-hippocampus-3.zarr/recon-1/em/fibsem-int16/s0"),
+    ]
 
-class VolumeDataset(IterableDataset, Stateful):
+# _volumes_list = [
+#     os.path.join(BASE_DIR, "jrc_mus-granule-neurons-2/jrc_mus-granule-neurons-2.zarr/recon-2/em/fibsem-int16/s0"),
+#     os.path.join(BASE_DIR, "jrc_mus-granule-neurons-2/jrc_mus-granule-neurons-2.zarr/recon-2/em/fibsem-int16/s0"),
+#     os.path.join(BASE_DIR, "jrc_mus-granule-neurons-2/jrc_mus-granule-neurons-2.zarr/recon-2/em/fibsem-int16/s0"),
+#     os.path.join(BASE_DIR, "jrc_mus-granule-neurons-2/jrc_mus-granule-neurons-2.zarr/recon-2/em/fibsem-int16/s0"),
+#     os.path.join(BASE_DIR, "jrc_mus-granule-neurons-2/jrc_mus-granule-neurons-2.zarr/recon-2/em/fibsem-int16/s0")
+#     ]
+
+class VolumeDataset(IterableDataset):
     """PyTorch IterableDataset for generating random crops from volume data on-the-fly.
 
-    This dataset generates random samples from EM volumes.It is stateful and supports checkpointing 
-    to ensure reproducibility in a distributed environment.
+    This dataset generates random samples from EM volumes.
 
     Args:
-        data_dir: The path to the top-level directory containing volume folders.
-        subdir_name: Subdirectory name containing the EM data.
-        crop_size: A tuple of (depth, height, width) for the desired crop.
-        resolution: Resolution at which to retrieve the data (default: 's0').
-        world_size (int): number of data parallel processes participating in training
+        crop_size: A tuple of (depth, height, width) for the desired crops.
+        world_size (int): number of data parallel processes participating in distributed training
         rank (int): rank of the current data parallel process
     """
-    def __init__(
-        self,
-        data_dir: str,
-        subdir_name: str,
-        crop_size: tuple[int, int, int], 
-        resolution: str,
-        world_size: int,
-        rank: int,
-    ) -> None:
-        self.data_dir = data_dir
-        self.subdir_name = subdir_name
+    def __init__(self, crop_size, rank: int, world_size: int):
         self.crop_size = crop_size
-        self.resolution = resolution
-        self.world_size = world_size
         self.rank = rank
+        self.world_size = world_size
+        self.volume = None
+        self.shm = None
 
-        # list of all subdirectories in the data directory
-        self.volumes = [d for d in os.listdir(self.data_dir) if os.path.isdir(os.path.join(self.data_dir, d))]
+        # ---------- topology ----------
+        num_gpus_per_node = 4  # set correctly
+        node_rank = rank // num_gpus_per_node
+        local_rank = rank % num_gpus_per_node
+        is_local_leader = (local_rank == 0)
 
-        # seed the rng for this process to ensure different data per rank
-        # adding rank to a random seed ensures that each process starts with a
-        # unique, non-overlapping sequence of random numbers
-        np.random.seed(rank + np.random.randint(0, 2**32 - 1))
+        meta_path = f"/dev/shm/vol_node{node_rank}.meta"   # per-node metadata file
+        tmp_meta_path = meta_path + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:6]}"
 
-        # variables for checkpointing
-        self._sample_idx = 0
-        self._all_tokens: List[int] = []
-        self._rng_state = np.random.get_state()
+        # dtype maps (symmetric)
+        dtype_map = {str(np.dtype("uint8")): 1, str(np.dtype("int16")): 2, str(np.dtype("float32")): 3}
+        dtype_map_rev = {1: np.uint8, 2: np.int16, 3: np.float32}
+        payload = None
 
-    def _generate_sample(self) -> np.ndarray:
+        if is_local_leader:
+            # 1) pick and load assigned volume
+            indices = np.arange(len(_volumes_list))
+            rng = np.random.RandomState(42)
+            rng.shuffle(indices)
+            assigned_volume_index = indices[node_rank % len(indices)]
+            volume_path = _volumes_list[assigned_volume_index]
+
+            print(f"[leader node{node_rank} global{rank}] loading {volume_path}", flush=True)
+            zarr_volume = zarr.open(volume_path, mode="r")
+            temp_volume = np.array(zarr_volume, copy=True)
+
+            # 2) create unique SHM name and create shared memory
+            unique_suffix = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+            shm_name = f"vol_node{node_rank}_{unique_suffix}"
+            shm_size = temp_volume.nbytes
+
+            print(f"[leader node{node_rank} global{rank}] creating SHM '{shm_name}' size={shm_size}", flush=True)
+            self.shm = SharedMemory(create=True, name=shm_name, size=shm_size)
+            shared_volume_np = np.ndarray(temp_volume.shape, dtype=temp_volume.dtype, buffer=self.shm.buf)
+            shared_volume_np[...] = temp_volume
+            self.volume = shared_volume_np
+
+            # 3) prepare payload and atomically write JSON metadata to /dev/shm
+            dtype_code = dtype_map[str(np.dtype(self.volume.dtype))]
+            payload = {
+                "shm_name": shm_name,
+                "shape": tuple(int(x) for x in self.volume.shape),
+                "dtype_code": int(dtype_code),
+            }
+            print(f"[leader node{node_rank} global{rank}] payload={payload}", flush=True)
+
+            # atomic write: write to tmp file then rename
+            with open(tmp_meta_path, "w") as f:
+                json.dump(payload, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_meta_path, meta_path)   # atomic on POSIX
+            print(f"[leader node{node_rank} global{rank}] wrote meta to {meta_path}", flush=True)
+
+        else:
+            # non-leaders: wait for the file to appear (poll)
+            MAX_WAIT = 3600.0   # seconds
+            POLL = 0.05
+            waited = 0.0
+            while not os.path.exists(meta_path) and waited < MAX_WAIT:
+                time.sleep(POLL)
+                waited += POLL
+            if not os.path.exists(meta_path):
+                raise RuntimeError(f"[node{node_rank} global{rank}] timed out waiting for metadata file {meta_path}")
+
+            # read the payload
+            with open(meta_path, "r") as f:
+                payload = json.load(f)
+            print(f"[node{node_rank} global{rank}] read payload={payload}", flush=True)
+
+        # Now attach based on payload (both leader and non-leaders will have payload)
+        shm_name = payload["shm_name"]
+        shape = tuple(int(x) for x in payload["shape"])
+        dtype_code = int(payload["dtype_code"])
+        dtype = dtype_map_rev[dtype_code]
+
+        if not is_local_leader:
+            # try attach (with some retries because leader might still be finishing)
+            MAX_TRIES = 20
+            ATTEMPT_DELAY = 0.05
+            attached = False
+            last_exc = None
+            for i in range(MAX_TRIES):
+                try:
+                    self.shm = SharedMemory(name=shm_name, create=False)
+                    self.volume = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
+                    attached = True
+                    print(f"[node{node_rank} global{rank}] attached to SHM {shm_name} on attempt {i+1}", flush=True)
+                    break
+                except FileNotFoundError as e:
+                    last_exc = e
+                    time.sleep(ATTEMPT_DELAY)
+                except Exception as e:
+                    last_exc = e
+                    time.sleep(ATTEMPT_DELAY)
+
+            if not attached:
+                raise RuntimeError(f"[node{node_rank} global{rank}] failed to attach to SharedMemory '{shm_name}': {last_exc}")
+
+        else:
+            # leader already has self.volume set from the write above
+            print(f"[leader node{node_rank} global{rank}] leader keeps SHM {shm_name}", flush=True)
+
+        # Optional: if you want to clean up the metadata file later, let leader remove it
+        # but don't unlink SHM until you're certain all children finished (e.g., at shutdown)
+        # Final global barrier to ensure everyone is ready (optional)
+        print(f"[node{node_rank} global{rank}] setup complete. volume shape: {self.volume.shape}", flush=True)
+
+
+    def _generate_sample(self) -> torch.Tensor:
         """
-        Selects a random volume from the data directory, opens its Zarr array,
-        and extracts a random 3D crop.
-
-        The expected directory structure for each volume is:
-        <data_dir>/<volume_name>/<volume_name>.zarr/recon-1/em/fibsem-uint8/s0
+        Crops a random subvolume from the loaded volume.
 
         Returns:
-            A NumPy array containing the cropped data, or None if an error occurs.
+            A torch Tensor containing the cropped data, or None if an error occurs.
         """         
-        # randomly select one of the volumes
-        selected_volume = random.choice(self.volumes)
+        
+        # Get the dimensions of the full volume and the desired crop.
+        vol_d, vol_h, vol_w = self.volume.shape
+        crop_d, crop_h, crop_w = self.crop_size
 
-        # construct the path to the zarr array
-        zarr_path = os.path.join(
-            self.data_dir,
-            selected_volume,
-            f"{selected_volume}.zarr",
-            self.subdir_name
-        )
-        
-        # open the zarr array at given resolution
-        zarr_group = zarr.open(zarr_path, mode='r')                
-        zarr_array = zarr_group[self.resolution]
-        full_shape = zarr_array.shape
-        
-        assert all(c <= f for c, f in zip(self.crop_size, full_shape)), "Crop size must be smaller than the full volume along each dimension."
+        # Ensure the crop size is not larger than the volume itself.
+        if any(cs > vs for cs, vs in zip(self.crop_size, self.volume.shape)):
+            raise ValueError(f"Crop size {self.crop_size} is larger than the volume shape {self.volume.shape}.")
 
-        # calculate the maximum possible starting index for the crop in each dimension
-        cz, cy, cx = self.crop_size
-        max_z = full_shape[0] - cz
-        max_y = full_shape[1] - cy
-        max_x = full_shape[2] - cx
-        
-        # generate a random starting point
-        start_z = random.randint(0, max_z)
-        start_y = random.randint(0, max_y)
-        start_x = random.randint(0, max_x)
-        
-        # read the specific crop from the zarr array into a NumPy array
-        crop_slice = (
-            slice(start_z, start_z + cz),
-            slice(start_y, start_y + cy),
-            slice(start_x, start_x + cx)
-        )
-        crop = zarr_array[crop_slice] / 255 - 0.5
+        # Determine the valid range for the starting coordinates of the crop.
+        # The crop must not extend beyond the volume's boundaries.
+        max_d = vol_d - crop_d
+        max_h = vol_h - crop_h
+        max_w = vol_w - crop_w
+
+        # Generate random starting coordinates.
+        start_d = np.random.randint(0, max_d + 1)
+        start_h = np.random.randint(0, max_h + 1)
+        start_w = np.random.randint(0, max_w + 1)
+
+        # Extract the crop using numpy slicing.
+        crop = self.volume[
+            start_d : start_d + crop_d,
+            start_h : start_h + crop_h,
+            start_w : start_w + crop_w
+        ]
+
+        # crop = zarr_array[crop_slice] / 255 - 0.5  # normalize
         crop = torch.from_numpy(crop).unsqueeze(0).to(torch.bfloat16)
         # print(f"Crop max/min/shape/dtype: {crop.max()}/{crop.min()}/{crop.shape}/{crop.dtype}")
-        
         return crop
 
     def __iter__(self):
-        # restore the RNG state at the beginning of iteration to ensure
-        # that resuming from a checkpoint continues the same random sequence.
-        np.random.set_state(self._rng_state)  # TODO: not sure if I really need this
-
         while True:
             sample = self._generate_sample()
-            self._sample_idx += 1
-
-            # yield sample
             yield sample
 
-    def state_dict(self) -> Dict[str, Any]:
-        # capture the current RNG state for checkpointing.
-        self._rng_state = np.random.get_state()
-        return {
-            "sample_idx": self._sample_idx,
-            "rng_state": self._rng_state,
-        }
-
-    def load_state_dict(self, state_dict: Dict[str, Any]):
-        self._sample_idx = state_dict["sample_idx"]
-        self._rng_state = state_dict["rng_state"]
-        # rng state will be restored at the start of the next __iter__ call.
-
-
-class DPAwareDataLoader(StatefulDataLoader, Stateful):
-    """
-    A wrapper around the StatefulDataLoader that ensures that the state is stored only once per DP rank.
-    """
-    def __init__(self, dp_rank: int, dataset: IterableDataset, batch_size: int, num_workers: int):
-        super().__init__(dataset, batch_size)
-        self._dp_rank = dp_rank
-        self._rank_id = f"dp_rank_{dp_rank}"
-
-    def state_dict(self) -> Dict[str, Any]:
-        # store state only for dp rank to avoid replicating the same state across other dimensions
-        return {self._rank_id: pickle.dumps(super().state_dict())}
-
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        # state being empty is valid
-        if not state_dict:
-            return
-
-        if self._rank_id not in state_dict:
-            logger.warning(f"DataLoader state is empty for dp rank {self._dp_rank}, expected key {self._rank_id}")
-            return
-        super().load_state_dict(pickle.loads(state_dict[self._rank_id]))
-
-
 def build_data_loader(
-    data_dir: str,
-    subdir_name: str,
     batch_size: int,
     crop_size: tuple[int, int, int], 
-    resolution: str = "s0",
     num_workers: int = 0,
     world_size: int = 1,
     rank: int = 0,
-) -> DPAwareDataLoader:
+) -> DataLoader:
     """
     Builds a volume EM data loader for distributed training.
 
     Args:
-        data_dir: The path to the top-level directory containing volume folders.
-        subdir_name: Subdirectory name containing the EM data.
         batch_size (int): The batch size for the data loader.
         crop_size: A tuple of (depth, height, width) for the desired crop.
-        resolution: Resolution at which to retrieve the data (default: 's0').
         world_size (int): The total number of processes in the distributed group.
         rank (int): The rank of the current process.
 
     Returns:
-        DPAwareDataLoader: A configured stateful data loader for distributed training.
+        DataLoader: A configured data loader for distributed training.
     """
     dataset = VolumeDataset(
-        data_dir=data_dir,
-        subdir_name=subdir_name,
-        crop_size=crop_size, 
-        resolution=resolution,
+        crop_size=crop_size,
+        rank=rank,
         world_size=world_size,
-        rank=rank
     )
-
-    return DPAwareDataLoader(rank, dataset, batch_size=batch_size, num_workers=num_workers)
+    return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers)

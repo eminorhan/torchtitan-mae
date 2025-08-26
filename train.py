@@ -86,11 +86,8 @@ def main(job_config: JobConfig):
 
     # build dataloader
     data_loader = build_data_loader(
-        job_config.training.data_dir,
-        job_config.training.subdir_name,
         job_config.training.batch_size,
         (job_config.model.img_size, job_config.model.img_size, job_config.model.img_size),
-        job_config.training.resolution,
         job_config.training.num_workers,
         dp_degree,
         dp_rank,
@@ -137,7 +134,6 @@ def main(job_config: JobConfig):
 
     # load initial checkpoint
     checkpoint = CheckpointManager(
-        dataloader=data_loader,
         model_parts=model_parts,
         optimizers=optimizers.optimizers,
         lr_schedulers=lr_schedulers.schedulers,

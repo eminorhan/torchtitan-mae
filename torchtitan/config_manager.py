@@ -87,9 +87,6 @@ class JobConfig:
         self.parser.add_argument("--optimizer.fused", default=True, action="store_true", help="Whether the fused implementation (CUDA only) is used.")
 
         # training configs
-        self.parser.add_argument("--training.data_dir", type=str, default="", help="The path to the top-level directory containing volume folders")
-        self.parser.add_argument("--training.subdir_name", type=str, default="", help="Subdirectory name containing the EM data")
-        self.parser.add_argument("--training.resolution", type=str, default="s0", help="Resolution at which to retrieve the data (default: 's0', i.e. highest resolution)")
         self.parser.add_argument("--training.batch_size", type=int, default=8, help="Batch size")
         self.parser.add_argument("--training.num_workers", type=int, default=0, help="Number of data loading workers per DP rank.")
         self.parser.add_argument("--training.warmup_steps", type=int, default=1000, help="Steps for lr scheduler warmup, normally 1/5 of --training.steps")
