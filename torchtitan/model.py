@@ -18,10 +18,10 @@ class ModelArgs:
     n_layers: int = 16
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
-    multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
+    multiple_of: int = 1024  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-6
-    rope_theta: float = 1_000_000
+    rope_theta: float = 100
     mask_ratio: float = 0.95
     depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
     # decoder args
@@ -29,10 +29,10 @@ class ModelArgs:
     decoder_n_layers: int = 4
     decoder_n_heads: int = 16
     decoder_n_kv_heads: Optional[int] = None
-    decoder_multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
+    decoder_multiple_of: int = 1024  # make SwiGLU hidden layer size multiple of large power of 2
     decoder_ffn_dim_multiplier: Optional[float] = None
     decoder_norm_eps: float = 1e-6
-    decoder_rope_theta: float = 1_000_000
+    decoder_rope_theta: float = 100
     decoder_depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
 
 
@@ -43,8 +43,6 @@ model_configs = {
         n_heads=32,
         n_kv_heads=8,
         ffn_dim_multiplier=1.3,
-        multiple_of=1024,
-        rope_theta=1_000_000,
     ),
     "8B": ModelArgs(
         dim=4096,
@@ -52,59 +50,47 @@ model_configs = {
         n_heads=32,
         n_kv_heads=8,
         ffn_dim_multiplier=1.3,
-        multiple_of=1024,
-        rope_theta=1_000_000,
     )
 }
 
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 500_000) -> torch.Tensor:
+def compute_axial_cis_3d(dim: int, end_x: int, end_y: int, end_z: int, theta: float = 100.0) -> torch.Tensor:
     """
-    Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
+    Computes 3D axial Rotary Positional Embeddings (RoPE).
 
-    This function calculates a frequency tensor with complex exponentials using the given dimension 'dim'
-    and the end index 'end'. The 'theta' parameter scales the frequencies.
-    The returned tensor contains complex values in complex64 data type.
-
-    Args:
-        dim (int): Dimension of the frequency tensor.
-        end (int): End index for precomputing frequencies.
-        theta (float, optional): Scaling factor for frequency computation. Defaults to 10000.0.
-
-    Returns:
-        torch.Tensor: Precomputed frequency tensor with complex exponentials.
+    The embedding dimension `dim` is split into three parts for the x, y, and z axes.
     """
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)
-    freqs = torch.outer(t, freqs).float()
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-    return freqs_cis
+    # Dimension must be divisible by 6, as it's split into 3 axes,
+    # and each axis's part must be even for complex number pairs.
+    assert dim % 6 == 0, "Dimension must be divisible by 6 for 3D RoPE."
 
+    # Calculate the inverse frequencies for rotation.
+    # Each axis gets dim/3 channels, so we need dim/6 frequencies.
+    axis_dim = dim // 6
+    freqs = 1.0 / (theta ** (torch.arange(0, axis_dim).float() / axis_dim))
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    """
-    Reshape frequency tensor for broadcasting it with another tensor.
+    # Get the 3D coordinates for every point in the grid.
+    t_x, t_y, t_z = torch.meshgrid(
+        torch.arange(end_x, dtype=torch.float32), 
+        torch.arange(end_y, dtype=torch.float32), 
+        torch.arange(end_z, dtype=torch.float32), 
+        indexing='xy'
+        )
 
-    This function reshapes the frequency tensor to have the same shape as the target tensor 'x'
-    for the purpose of broadcasting the frequency tensor during element-wise operations.
+    # Compute the phase angles for each point on each axis.
+    # torch.outer(position, frequency) -> creates a matrix of angles.
+    freqs_x = torch.outer(t_x.flatten(), freqs)
+    freqs_y = torch.outer(t_y.flatten(), freqs)
+    freqs_z = torch.outer(t_z.flatten(), freqs)
 
-    The input freqs_cis tensor is assumed to be of shape (max_seqlen, dim),
-    and the first seqlen elements will be sliced, but dim must match x.
+    # Convert the phase angles to complex numbers (cis form).
+    # torch.polar creates complex numbers from magnitude (1.0) and angle.
+    freqs_cis_x = torch.polar(torch.ones_like(freqs_x), freqs_x)
+    freqs_cis_y = torch.polar(torch.ones_like(freqs_y), freqs_y)
+    freqs_cis_z = torch.polar(torch.ones_like(freqs_z), freqs_z)
 
-    Args:
-        freqs_cis (torch.Tensor): Frequency tensor to be reshaped.
-        x (torch.Tensor): Target tensor for broadcasting compatibility.
-
-    Returns:
-        torch.Tensor: Reshaped frequency tensor.
-    """
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    seqlen = x.shape[1]
-    freqs_cis = freqs_cis[0:seqlen]
-    assert freqs_cis.shape == (seqlen, x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
+    # Concatenate the embeddings for each axis. The final embedding will have shape (num_points, dim / 2) because complex numbers are used.
+    return torch.cat([freqs_cis_x, freqs_cis_y, freqs_cis_z], dim=-1)    
 
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -410,9 +396,11 @@ class Encoder(nn.Module):
         self.norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
 
     def _precompute_freqs_cis(self) -> torch.Tensor:
-        return precompute_freqs_cis(
+        return compute_axial_cis_3d(
             self.model_args.dim // self.model_args.n_heads,
-            (self.model_args.img_size // self.model_args.patch_size) ** 3,
+            self.model_args.img_size // self.model_args.patch_size,
+            self.model_args.img_size // self.model_args.patch_size,
+            self.model_args.img_size // self.model_args.patch_size,
             self.model_args.rope_theta,
         )
 
@@ -531,9 +519,11 @@ class Decoder(nn.Module):
         self.output = nn.Linear(model_args.decoder_dim, model_args.patch_size**3 * model_args.num_channels, bias=False)
 
     def _precompute_freqs_cis(self) -> torch.Tensor:
-        return precompute_freqs_cis(
+        return compute_axial_cis_3d(
             self.model_args.decoder_dim // self.model_args.decoder_n_heads,
-            (self.model_args.img_size // self.model_args.patch_size) ** 3,
+            self.model_args.img_size // self.model_args.patch_size,
+            self.model_args.img_size // self.model_args.patch_size,
+            self.model_args.img_size // self.model_args.patch_size,
             self.model_args.decoder_rope_theta,
         )
 
