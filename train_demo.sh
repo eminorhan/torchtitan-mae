@@ -37,6 +37,6 @@ export MASTER_PORT=3442
 
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/demo.toml"}
 
-srun torchrun --nnodes $SLURM_NNODES --nproc_per_node 4 --max_restarts 9 --node_rank $SLURM_NODEID --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$MASTER_ADDR:$MASTER_PORT" ./train.py --job.config_file ${CONFIG_FILE}
+srun torchrun --nnodes $SLURM_NNODES --nproc_per_node 4 --max_restarts 1 --node_rank $SLURM_NODEID --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$MASTER_ADDR:$MASTER_PORT" ./train.py --job.config_file ${CONFIG_FILE}
 
 echo "Done"

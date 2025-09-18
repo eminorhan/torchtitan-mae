@@ -1,9 +1,6 @@
 import os
-import random
 import zarr
 import numpy as np
-from typing import List
-
 import torch
 from torch.utils.data import IterableDataset, DataLoader
 
@@ -78,9 +75,9 @@ class VolumeDataset(IterableDataset):
             start_w : start_w + crop_w
         ]
 
-        # crop = zarr_array[crop_slice] / 255 - 0.5  # normalize
+        crop = (crop - crop.min()) / (crop.max() - crop.min())  # normalize to (0, 1)
         crop = torch.from_numpy(crop).unsqueeze(0).to(torch.bfloat16)
-        # print(f"Crop max/min/shape/dtype: {crop.max()}/{crop.min()}/{crop.shape}/{crop.dtype}")
+        print(f"Crop max/min/shape/dtype: {crop.max()}/{crop.min()}/{crop.shape}/{crop.dtype}")
         return crop
 
     def __iter__(self):

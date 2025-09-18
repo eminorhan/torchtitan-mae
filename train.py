@@ -191,6 +191,7 @@ def main(job_config: JobConfig):
             data_loading_times.append(time.perf_counter() - data_load_start)
 
             batch = batch.cuda()
+            print(f"Batch shape: {batch.shape}")
             optimizers.zero_grad()
 
             # ###### visualize (NOTE: this is for debug purposes, will be removed later)

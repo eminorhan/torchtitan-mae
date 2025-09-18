@@ -25,7 +25,7 @@ class ModelArgs:
     mask_ratio: float = 0.95
     depth_init: bool = True  # if True, each transformer block init uses its layer ID; otherwise, each uses the total number of transformer blocks
     # decoder args
-    decoder_dim: int = 512
+    decoder_dim: int = 768
     decoder_n_layers: int = 4
     decoder_n_heads: int = 16
     decoder_n_kv_heads: Optional[int] = None
@@ -89,8 +89,8 @@ def compute_axial_cis_3d(dim: int, end_x: int, end_y: int, end_z: int, theta: fl
     freqs_cis_y = torch.polar(torch.ones_like(freqs_y), freqs_y)
     freqs_cis_z = torch.polar(torch.ones_like(freqs_z), freqs_z)
 
-    # Concatenate the embeddings for each axis. The final embedding will have shape (num_points, dim / 2) because complex numbers are used.
-    return torch.cat([freqs_cis_x, freqs_cis_y, freqs_cis_z], dim=-1)    
+    # Concatenate the embeddings for each axis. The final embedding will have shape (num_points, dim / 2) because complex numbers are used
+    return torch.cat([freqs_cis_x, freqs_cis_y, freqs_cis_z], dim=-1)
 
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
