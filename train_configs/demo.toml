@@ -15,7 +15,7 @@ enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]
-size = "2B"  # "2B" or "8B"
+size = "2B"  # "2B" or "7B"
 img_size = 512  
 patch_size = 8  
 mask_ratio = 0.25

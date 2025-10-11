@@ -44,7 +44,7 @@ model_configs = {
         n_kv_heads=8,
         ffn_dim_multiplier=1.3,
     ),
-    "8B": ModelArgs(
+    "7B": ModelArgs(
         dim=4096,
         n_layers=32,
         n_heads=32,
@@ -75,7 +75,7 @@ def compute_axial_cis_3d(dim: int, end_x: int, end_y: int, end_z: int, theta: fl
         torch.arange(end_y, dtype=torch.float32), 
         torch.arange(end_z, dtype=torch.float32), 
         indexing='xy'
-        )
+    )
 
     # Compute the phase angles for each point on each axis.
     # torch.outer(position, frequency) -> creates a matrix of angles.

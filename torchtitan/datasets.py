@@ -77,7 +77,7 @@ class VolumeDataset(IterableDataset):
 
         crop = (crop - crop.min()) / (crop.max() - crop.min())  # normalize to (0, 1)
         crop = torch.from_numpy(crop).unsqueeze(0).to(torch.bfloat16)
-        print(f"Crop max/min/shape/dtype: {crop.max()}/{crop.min()}/{crop.shape}/{crop.dtype}")
+        # print(f"Crop max/min/shape/dtype: {crop.max()}/{crop.min()}/{crop.shape}/{crop.dtype}")
         return crop
 
     def __iter__(self):
