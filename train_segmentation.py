@@ -19,12 +19,12 @@ from torchtitan.datasets import build_data_loader
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
-from torchtitan.model import MaskedAutoencoder, model_configs
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
-from torchtitan.parallelisms import parallelize_mae, ParallelDims
+from torchtitan.parallelisms import parallelize_dino, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-
 from torchvision.utils import save_image
+
+from dinov3.eval.segmentation.models import build_segmentation_decoder
 
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
@@ -94,13 +94,9 @@ def main(job_config: JobConfig):
     )
 
     # build model (using meta init)
-    model_config = model_configs[job_config.model.size]
-    model_config.img_size = job_config.model.img_size
-    model_config.patch_size = job_config.model.patch_size
-    model_config.mask_ratio = job_config.model.mask_ratio
-
     with torch.device("meta"):
-        model = MaskedAutoencoder.from_model_args(model_config)
+        backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", pretrained=job_config.model.backbone_pretrained)  # weights=None, backbone_weights=None)
+        segmentor = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -108,18 +104,17 @@ def main(job_config: JobConfig):
     float8_handler.convert_to_float8_training(model)
 
     # log model size
-    eff_seq_len = int((1 - model_config.mask_ratio) * (model_config.img_size // model_config.patch_size) ** 3)
-    num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model), model_config, eff_seq_len)  # TODO: is this still ~correct for MAE architecture?
+    eff_seq_len = int((model_config.img_size // model_config.patch_size) ** 3)
+    num_flop_per_token = utils.get_num_flop_per_token(utils.get_num_params(model), model_config, eff_seq_len)  # TODO: is this still ~correct for DINOv3?
 
     # parallelization: apply PT-D TP, activation checkpointing, torch.compile, DP
-    parallelize_mae(model, world_mesh, parallel_dims, job_config)
+    parallelize_dino(model, world_mesh, parallel_dims, job_config)
 
     # move sharded model to CPU/GPU and initialize weights via DTensor
     init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
     model.to_empty(device=init_device)
-    model.init_weights()
-    model.train()
-
+    model.init_weights()  # TODO: chech what this does in DINO models
+    # model.train()
     model_parts = [model]
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
@@ -193,25 +188,25 @@ def main(job_config: JobConfig):
             batch = batch.cuda()
             optimizers.zero_grad()
 
-            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            model.eval()
-            with torch.no_grad():
-                _, comparison = model(batch, visualize=True)
+            # # ###### visualize (NOTE: this is for debug purposes, will be removed later)
+            # model.eval()
+            # with torch.no_grad():
+            #     _, comparison = model(batch, visualize=True)
 
-                if torch.distributed.get_rank() == 0:
+            #     if torch.distributed.get_rank() == 0:
 
-                    comparison = comparison[0].permute(0, 2, 1, 3, 4)
+            #         comparison = comparison[0].permute(0, 2, 1, 3, 4)
 
-                    a = comparison[0, ::(model_config.img_size // 8), :, :, :]
-                    b = comparison[1, ::(model_config.img_size // 8), :, :, :]
-                    c = comparison[2, ::(model_config.img_size // 8), :, :, :]
+            #         a = comparison[0, ::(model_config.img_size // 8), :, :, :]
+            #         b = comparison[1, ::(model_config.img_size // 8), :, :, :]
+            #         c = comparison[2, ::(model_config.img_size // 8), :, :, :]
 
-                    vis = torch.cat((a, b, c), 0)
-                    vis = vis.expand(-1, 3, -1, -1)
+            #         vis = torch.cat((a, b, c), 0)
+            #         vis = vis.expand(-1, 3, -1, -1)
 
-                    save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
-            model.train()
-            # ###### end visualize
+            #         save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+            # model.train()
+            # # ###### end visualize
             
             # run forward / backward
             with train_context():

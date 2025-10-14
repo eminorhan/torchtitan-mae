@@ -638,7 +638,7 @@ class MaskedAutoencoder(nn.Module):
         Args:
             imgs: (B, C, D, H, W)
 
-        Returns:    
+        Returns:
             x: (B, L, patch_size**3 * C) where L is the number of patches
         """
         B, C, D, H, W = imgs.shape
