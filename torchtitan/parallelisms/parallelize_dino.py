@@ -93,7 +93,7 @@ def parallelize_dino(
                 enable_compiled_autograd=job_config.experimental.enable_compiled_autograd,
             )
 
-# TODO: check TP + delete previous implementation if correct.
+# TODO: check TP implementation. Also NOTE: the plan here is specific to the DINO + linear head architecture 
 def apply_tp(
     model: nn.Module,
     tp_mesh: DeviceMesh,
@@ -132,23 +132,11 @@ def apply_tp(
         # TODO(vkuzo): once float8 configuration supports delayed scaling,
         # add a check here to enforce supported float8 all-gather configurations
         # TODO(vkuzo): add the items below to __init__.py of torchao.float8 and import from there
-        from torchao.float8.float8_tensor_parallel import (
-            Float8ColwiseParallel,
-            Float8RowwiseParallel,
-            PrepareFloat8ModuleInput,
-        )
+        from torchao.float8.float8_tensor_parallel import Float8ColwiseParallel, Float8RowwiseParallel, PrepareFloat8ModuleInput
 
-        rowwise_parallel, colwise_parallel, prepare_module_input = (
-            Float8RowwiseParallel,
-            Float8ColwiseParallel,
-            PrepareFloat8ModuleInput,
-        )
+        rowwise_parallel, colwise_parallel, prepare_module_input = Float8RowwiseParallel, Float8ColwiseParallel, PrepareFloat8ModuleInput
     else:
-        rowwise_parallel, colwise_parallel, prepare_module_input = (
-            RowwiseParallel,
-            ColwiseParallel,
-            PrepareModuleInput,
-        )
+        rowwise_parallel, colwise_parallel, prepare_module_input = RowwiseParallel, ColwiseParallel, PrepareModuleInput
 
     # Apply tensor + sequence parallelism to every transformer block
     # Loop through the `ModuleList` of SelfAttentionBlocks
@@ -187,97 +175,6 @@ def apply_tp(
         enable_symm_mem_for_group(tp_mesh.get_group().group_name)
 
     logger.info(f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''} Tensor Parallelism to the model")
-
-
-# def apply_tp(
-#     model: nn.Module,
-#     tp_mesh: DeviceMesh,
-#     loss_parallel: bool,
-#     enable_float8: bool,
-#     enable_async_tp: bool,
-# ):
-#     """Apply tensor parallelism."""
-#     # 1. Parallelize the embedding and shard its outputs (which are the first transformer block's inputs)
-#     # 2. Parallelize the root norm layer over the sequence dim
-#     # 3. Parallelize the final linear output layer
-#     parallelize_module(
-#         model,
-#         tp_mesh,
-#         {
-#             "tok_embeddings": RowwiseParallel(
-#                 input_layouts=Replicate(),
-#                 output_layouts=Shard(1),
-#             ),
-#             "norm": SequenceParallel(),
-#             "output": ColwiseParallel(
-#                 input_layouts=Shard(1),
-#                 output_layouts=Shard(-1) if loss_parallel else Replicate(),
-#                 use_local_output=not loss_parallel,
-#             ),
-#         },
-#     )
-
-#     # Parallel styles used for transformer block linear weights and their inputs may be different for float8 linears
-#     if enable_float8:
-#         # TODO(vkuzo): once float8 configuration supports delayed scaling,
-#         # add a check here to enforce supported float8 all-gather configurations
-#         # TODO(vkuzo): add the items below to __init__.py of torchao.float8 and import from there
-#         from torchao.float8.float8_tensor_parallel import (
-#             Float8ColwiseParallel,
-#             Float8RowwiseParallel,
-#             PrepareFloat8ModuleInput,
-#         )
-
-#         rowwise_parallel, colwise_parallel, prepare_module_input = (
-#             Float8RowwiseParallel,
-#             Float8ColwiseParallel,
-#             PrepareFloat8ModuleInput,
-#         )
-#     else:
-#         rowwise_parallel, colwise_parallel, prepare_module_input = (
-#             RowwiseParallel,
-#             ColwiseParallel,
-#             PrepareModuleInput,
-#         )
-
-#     # Apply tensor + sequence parallelism to every transformer block
-#     # NOTE: At the cost of model code change, we can accelerate Sequence Parallel
-#     #       by folding (and unfolding) the batch dimension and the sequence dimension.
-#     #       Examples can be found at https://github.com/pytorch/torchtitan/pull/437
-#     for layer_id, transformer_block in model.layers.items():
-#         layer_plan = {
-#             "attention_norm": SequenceParallel(),
-#             "attention": prepare_module_input(
-#                 input_layouts=(Shard(1), None),
-#                 desired_input_layouts=(Replicate(), None),
-#             ),
-#             "attention.wq": colwise_parallel(),
-#             "attention.wk": colwise_parallel(),
-#             "attention.wv": colwise_parallel(),
-#             "attention.wo": rowwise_parallel(output_layouts=Shard(1)),
-#             "ffn_norm": SequenceParallel(),
-#             "feed_forward": prepare_module_input(
-#                 input_layouts=(Shard(1),),
-#                 desired_input_layouts=(Replicate(),),
-#             ),
-#             "feed_forward.w1": colwise_parallel(),
-#             "feed_forward.w2": rowwise_parallel(output_layouts=Shard(1)),
-#             "feed_forward.w3": colwise_parallel(),
-#         }
-
-#         parallelize_module(
-#             module=transformer_block,
-#             device_mesh=tp_mesh,
-#             parallelize_plan=layer_plan,
-#         )
-
-#     if enable_async_tp:
-#         from torch.distributed._symmetric_memory import enable_symm_mem_for_group
-
-#         torch._inductor.config._micro_pipeline_tp = True
-#         enable_symm_mem_for_group(tp_mesh.get_group().group_name)
-
-#     logger.info(f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''} Tensor Parallelism to the model")
 
 
 # for selective op activation checkpointing
