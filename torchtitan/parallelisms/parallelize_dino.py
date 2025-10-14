@@ -75,8 +75,6 @@ def parallelize_dino(
                 dp_mesh,
                 param_dtype=TORCH_DTYPE_MAP[job_config.training.mixed_precision_param],
                 reduce_dtype=TORCH_DTYPE_MAP[job_config.training.mixed_precision_reduce],
-                tp_enabled=parallel_dims.tp_enabled,
-                pp_enabled=parallel_dims.pp_enabled,
             )
             
             if parallel_dims.dp_replicate_enabled:
