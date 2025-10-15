@@ -36,11 +36,9 @@ def parallelize_dino(
     job_config: JobConfig,
 ):
     """
-    Apply tensor parallelism, activation checkpointing, torch.compile, and data
-    parallelism to the model.
+    Apply tensor parallelism, activation checkpointing, torch.compile, and data parallelism to the model.
 
-    NOTE: The passed-in model preferably should be on meta device. Otherwise,
-    the model must fit on GPU or CPU memory.
+    NOTE: The passed-in model preferably should be on meta device. Otherwise, the model must fit on GPU or CPU memory.
     """
 
     if parallel_dims.tp_enabled:
@@ -84,6 +82,7 @@ def parallelize_dino(
         else:
             if world_mesh.ndim > 1:
                 raise RuntimeError("DDP has not supported > 1D parallelism")
+            
             apply_ddp(
                 model,
                 world_mesh,
@@ -124,8 +123,7 @@ def apply_tp(
     }
     parallelize_module(model, tp_mesh, root_plan)
 
-    # Parallel styles used for transformer block linear weights and their
-    # inputs may be different for float8 linears
+    # Parallel styles used for transformer block linear weights and their inputs may be different for float8 linears
     if enable_float8:
         # TODO(vkuzo): once float8 configuration supports delayed scaling,
         # add a check here to enforce supported float8 all-gather configurations

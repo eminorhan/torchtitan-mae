@@ -2,7 +2,7 @@
 
 [job]
 dump_folder = "./outputs/demo"
-description = "demo-mae training"
+description = "segmentation training"
 
 [profiling]
 enable_profiling = false
@@ -20,9 +20,10 @@ head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
 backbone_pretrained = false
 num_classes = 48  # is this correct? 
-img_size = 512  
-patch_size = 8  
-mask_ratio = 0.95
+crop_size = 512
+
+[data]
+dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge_old/data"
 
 [optimizer]
 name = "AdamW"

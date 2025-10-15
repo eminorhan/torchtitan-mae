@@ -80,6 +80,16 @@ class JobConfig:
         self.parser.add_argument("--model.img_size", type=int, default=512, help="Size of volume crops")
         self.parser.add_argument("--model.patch_size", type=int, default=8, help="Patch size")
         self.parser.add_argument("--model.mask_ratio", type=float, default=0.95, help="Mask ratio")
+        self.parser.add_argument("--model.backbone", type=str, default="dinov3_vit7b16", help="DINOv3 backbone", choices=["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16", "dinov3_vitb16", "dinov3_vits16plus", "dinov3_vits16"])
+        self.parser.add_argument("--model.head", type=str, default="linear", help="DINOv3 head", choices=["linear", "m2f"])
+        self.parser.add_argument("--model.dinov3_repo_folder", type=str, default="/lustre/gale/stf218/scratch/emin/dinov3", help="Local path to DINOv3 repo (to be used for model definitions)")
+        self.parser.add_argument("--model.backbone_pretrained", action="store_true", help="Whether to use the pretrained backbone")
+        self.parser.add_argument("--model.num_classes", type=int, default=48, help="Number of classes in output head")
+        self.parser.add_argument("--model.crop_size", type=int, default=512, help="Size of volume crops (single dimension)")
+
+        # data configs
+        self.parser.add_argument("--data.dataset_folder", type=str, default="/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge_old/data", help="Root directory for the dataset")
+        self.parser.add_argument("--data.base_seed", type=int, default=0, help="Random base seed to be used for shuffling the dataset")
 
         # optimizer configs
         self.parser.add_argument("--optimizer.name", type=str, default="AdamW", help="Optimizer to use")

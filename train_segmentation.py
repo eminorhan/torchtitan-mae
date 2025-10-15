@@ -87,10 +87,10 @@ def main(job_config: JobConfig):
     # build dataloader
     data_loader = build_data_loader(
         job_config.training.batch_size,
-        (job_config.model.img_size, job_config.model.img_size, job_config.model.img_size),
-        job_config.training.num_workers,
-        dp_degree,
+        job_config.data.dataset_folder,
+        (job_config.model.crop_size, job_config.model.crop_size),
         dp_rank,
+        job_config.data.base_seed
     )
 
     # build model (using meta init)
