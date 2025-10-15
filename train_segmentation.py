@@ -94,9 +94,9 @@ def main(job_config: JobConfig):
     )
 
     # build model (using meta init)
-    with torch.device("meta"):
-        backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", pretrained=job_config.model.backbone_pretrained)  # weights=None, backbone_weights=None)
-        segmentor = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
+    # with torch.device("meta"):
+    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", pretrained=job_config.model.backbone_pretrained)  # weights=None, backbone_weights=None)
+    model = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -108,9 +108,10 @@ def main(job_config: JobConfig):
 
     # move sharded model to CPU/GPU and initialize weights via DTensor
     init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
-    model.to_empty(device=init_device)
-    model.init_weights()  # TODO: chech what this does in DINO models
-    # model.train()
+    model.to(device=init_device)
+    # model.to_empty(device=init_device)
+    # model.init_weights()  # TODO: chech what this does in DINO models
+    # model.train()  # TODO: what to do with this?
     model_parts = [model]
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
@@ -182,10 +183,12 @@ def main(job_config: JobConfig):
 
             # get batch
             data_load_start = time.perf_counter()
-            batch = next(data_iterator)
+            inputs, targets = next(data_iterator)
             data_loading_times.append(time.perf_counter() - data_load_start)
 
-            batch = batch.cuda()
+            inputs = inputs.cuda()
+            targets = targets.cuda()
+
             optimizers.zero_grad()
 
             # # ###### visualize (NOTE: this is for debug purposes, will be removed later)
@@ -210,8 +213,8 @@ def main(job_config: JobConfig):
             
             # run forward / backward
             with train_context():
-                pred = model(batch[0])
-                loss = loss_fn(pred, batch[1])
+                preds = model(inputs)
+                loss = loss_fn(preds, targets)
                 loss.backward()
             
             # clip gradients

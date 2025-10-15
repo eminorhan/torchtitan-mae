@@ -258,7 +258,7 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
     It inherits seeding and iteration logic from its 3D parent class.
     """
-    def __init__(root_dir, crop_size, rank, base_seed, raw_scale='s0', labels_scale='s0'):
+    def __init__(self, root_dir, crop_size, rank, base_seed, raw_scale='s0', labels_scale='s0'):
         """
         Initializes the 2D dataloader.
 

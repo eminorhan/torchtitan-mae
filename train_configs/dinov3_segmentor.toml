@@ -23,7 +23,7 @@ num_classes = 48  # is this correct?
 crop_size = 512
 
 [data]
-dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge_old/data"
+dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
 
 [optimizer]
 name = "AdamW"

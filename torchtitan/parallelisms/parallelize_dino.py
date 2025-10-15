@@ -263,7 +263,7 @@ def apply_fsdp(
     mp_policy = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=reduce_dtype)
     fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
 
-    for layer_id, transformer_block in model.segmentation_model[0].feature_model.blocks.items():  # TODO: is this correct?
+    for transformer_block in model.segmentation_model[0].feature_model.blocks:  # TODO: is this correct?
         fully_shard(transformer_block, **fsdp_config, reshard_after_forward=False)
         
     fully_shard(model, **fsdp_config, reshard_after_forward=False)

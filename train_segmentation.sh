@@ -28,6 +28,7 @@ export HF_HOME="/lustre/gale/stf218/scratch/emin/huggingface"
 export HF_DATASETS_CACHE="/lustre/gale/stf218/scratch/emin/huggingface"
 export TRITON_CACHE_DIR="/lustre/gale/stf218/scratch/emin/triton"
 export PYTORCH_KERNEL_CACHE_PATH="/lustre/gale/stf218/scratch/emin/pytorch_kernel_cache"
+export MPLCONFIGDIR="/lustre/gale/stf218/scratch/emin/mplconfigdir"
 export HF_HUB_OFFLINE=1
 export GPUS_PER_NODE=4
 

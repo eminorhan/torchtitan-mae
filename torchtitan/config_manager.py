@@ -88,7 +88,7 @@ class JobConfig:
         self.parser.add_argument("--model.crop_size", type=int, default=512, help="Size of volume crops (single dimension)")
 
         # data configs
-        self.parser.add_argument("--data.dataset_folder", type=str, default="/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge_old/data", help="Root directory for the dataset")
+        self.parser.add_argument("--data.dataset_folder", type=str, default="/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data", help="Root directory for the dataset")
         self.parser.add_argument("--data.base_seed", type=int, default=0, help="Random base seed to be used for shuffling the dataset")
 
         # optimizer configs
