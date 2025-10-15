@@ -253,7 +253,7 @@ class ZarrSegmentationDataset(IterableDataset):
             yield self._get_sample()
 
 
-class ZarrSegmentationIterableDataset2D(ZarrSegmentationIterableDataset):
+class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
     """
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
     It inherits seeding and iteration logic from its 3D parent class.
@@ -387,14 +387,14 @@ def build_data_loader(
     """
     # We pick out 2D or 3D dataset class based on the crop_size argument
     if len(crop_size) == 3:
-        dataset = ZarrSegmentationIterableDataset(
+        dataset = ZarrSegmentationDataset(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,
             base_seed=base_seed
         )
     else:
-        dataset = ZarrSegmentationIterableDataset2D(
+        dataset = ZarrSegmentationDataset2D(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,
