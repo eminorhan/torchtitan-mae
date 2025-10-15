@@ -52,6 +52,7 @@ class ZarrSegmentationDataset(IterableDataset):
             list: A list of dictionaries, where each dictionary contains paths and metadata for a single sample.
         """
         samples = []
+        
         # Find all top-level zarr directories
         zarr_paths = glob(os.path.join(self.root_dir, '*/*.zarr'))
 
@@ -241,7 +242,11 @@ class ZarrSegmentationDataset(IterableDataset):
         slicing_for_copy = tuple(slice(0, min(fs, cs)) for fs, cs in zip(target_shape, raw_crop_from_zarr.shape))
         final_raw_crop[slicing_for_copy] = raw_crop_from_zarr[slicing_for_copy]
 
-        return final_raw_crop, final_label_mask
+        # Add channel axis (TODO: need to add input/label transformations here)
+        raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...]).float() / 255.0
+        label_tensor = torch.from_numpy(final_label_mask[np.newaxis, ...]).long()
+
+        return raw_tensor, label_tensor
 
     def __iter__(self):
         while True:
@@ -275,7 +280,7 @@ class ZarrSegmentationIterableDataset2D(ZarrSegmentationIterableDataset):
         Fetches a single random 2D slice, loading it directly from the Zarr store.
         This method overrides the parent class's method.
         """
-        # 1. Randomly select a 3D volume, axis, and slice index
+        # Randomly select a 3D volume, axis, and slice index
         sample_info = self.rng.choice(self.samples)
         zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
         label_array_3d = zarr_root[sample_info['label_path']]
@@ -284,7 +289,7 @@ class ZarrSegmentationIterableDataset2D(ZarrSegmentationIterableDataset):
         axis = self.rng.integers(0, 3) # Randomly choose Z, Y, or X axis
         slice_idx = self.rng.integers(0, shape_3d[axis]) # Randomly choose slice along that axis
 
-        # 2. Get the 2D label slice and its 3D metadata
+        # Get the 2D label slice and its 3D metadata
         slicing_3d = [slice(None)] * 3
         slicing_3d[axis] = slice_idx
         label_slice_2d = label_array_3d[tuple(slicing_3d)]
@@ -294,7 +299,7 @@ class ZarrSegmentationIterableDataset2D(ZarrSegmentationIterableDataset):
         label_scale_name = os.path.basename(sample_info['label_path'])
         label_scale_3d, label_translation_3d = self._parse_ome_ngff_metadata(label_attrs, label_scale_name)
 
-        # 3. Adjust label slice to crop_size (crop or resample)
+        # Adjust label slice to crop_size (crop or resample)
         original_shape_2d = label_slice_2d.shape
         target_shape_2d = self.crop_size
         if all(os >= ts for os, ts in zip(original_shape_2d, target_shape_2d)):
@@ -315,7 +320,7 @@ class ZarrSegmentationIterableDataset2D(ZarrSegmentationIterableDataset):
             original_physical_size_2d = [sh * sc for sh, sc in zip(original_shape_2d, [label_scale_3d[d] for d in axes_2d])]
             adjusted_label_scale_2d = [ps / ts for ps, ts in zip(original_physical_size_2d, target_shape_2d)]
 
-        # 4. Find best raw scale and fetch corresponding 2D raw slice
+        # Find best raw scale and fetch corresponding 2D raw slice
         raw_group_path = sample_info['raw_path_group']
         raw_attrs = zarr_root[raw_group_path].attrs.asdict()
         
@@ -355,7 +360,7 @@ class ZarrSegmentationIterableDataset2D(ZarrSegmentationIterableDataset):
         else:
             final_raw_slice = raw_slice_2d
 
-        # 5. Convert to channel-first Tensors and return
+        # Add channel axis (TODO: need to add input/label transformations here)
         raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
         label_tensor = torch.from_numpy(final_label_slice[np.newaxis, ...]).long()
         
