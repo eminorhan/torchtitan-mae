@@ -93,8 +93,8 @@ def main(job_config: JobConfig):
         job_config.data.base_seed
     )
 
-    # build model
-    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", pretrained=job_config.model.backbone_pretrained)  # weights=None, backbone_weights=None)
+    # build model (TODO: maybe try 'meta' init here.)
+    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", pretrained=False)
     model = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
     # a no-op hander if float8 is not enabled

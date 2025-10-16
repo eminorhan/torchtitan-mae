@@ -344,13 +344,19 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
         size_in_phys_2d = [sh * sc for sh, sc in zip(target_shape_2d, adjusted_label_scale_2d)]
         size_in_raw_voxels_2d = [int(round(p / s)) for p, s in zip(size_in_phys_2d, [raw_scale_3d[d] for d in axes_2d])]
         
-        raw_slicing = [0,0,0]
-        raw_slicing[axes_2d[0]] = slice(start_voxels_raw_3d[axes_2d[0]], start_voxels_raw_3d[axes_2d[0]] + size_in_raw_voxels_2d[0])
-        raw_slicing[axes_2d[1]] = slice(start_voxels_raw_3d[axes_2d[1]], start_voxels_raw_3d[axes_2d[1]] + size_in_raw_voxels_2d[1])
-        raw_slicing[axis] = start_voxels_raw_3d[axis]
+        # Get the actual shape of the raw data array
+        raw_shape_3d = raw_array_3d.shape
 
-        raw_slice_2d = raw_array_3d[tuple(raw_slicing)]
+        # Clamp the calculated coordinates to be within the valid bounds of the raw array (this prevents the BoundsCheckError)s
+        safe_start_voxels_raw_3d = [np.clip(start_voxels_raw_3d[i], 0, raw_shape_3d[i] - 1) for i in range(3)]
+        
+        safe_raw_slicing = [0, 0, 0]
+        safe_raw_slicing[axes_2d[0]] = slice(safe_start_voxels_raw_3d[axes_2d[0]], min(safe_start_voxels_raw_3d[axes_2d[0]] + size_in_raw_voxels_2d[0], raw_shape_3d[axes_2d[0]]))
+        safe_raw_slicing[axes_2d[1]] = slice(safe_start_voxels_raw_3d[axes_2d[1]], min(safe_start_voxels_raw_3d[axes_2d[1]] + size_in_raw_voxels_2d[1], raw_shape_3d[axes_2d[1]]))
+        safe_raw_slicing[axis] = safe_start_voxels_raw_3d[axis]
 
+        # Use the safe, clamped slicing to read from Zarr
+        raw_slice_2d = raw_array_3d[tuple(safe_raw_slicing)]
         if raw_slice_2d.shape != target_shape_2d:
              if any(s == 0 for s in raw_slice_2d.shape):
                  final_raw_slice = np.zeros(target_shape_2d, dtype=raw_array_3d.dtype)
