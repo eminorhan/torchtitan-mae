@@ -362,9 +362,9 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
 
         # Add channel axis (TODO: need to add input/label transformations here)
         raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
-        label_tensor = torch.from_numpy(final_label_slice[np.newaxis, ...]).long()
+        label_tensor = torch.from_numpy(final_label_slice).long()
         
-        return raw_tensor, label_tensor
+        return raw_tensor.expand(3, -1, -1), label_tensor
 
 
 def build_data_loader(

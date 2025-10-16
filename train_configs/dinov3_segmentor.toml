@@ -19,7 +19,7 @@ backbone = "dinov3_vit7b16"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_v
 head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
 backbone_pretrained = false
-num_classes = 48  # is this correct? 
+num_classes = 99  # TODO: correct this! 
 crop_size = 512
 
 [data]
