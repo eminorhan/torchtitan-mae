@@ -8,7 +8,15 @@ from glob import glob
 
 import torch
 from torch.utils.data import IterableDataset, DataLoader
+from torchvision.transforms import v2
 
+
+def make_transform():
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    return v2.Compose([to_float, normalize])
+
+transform = make_transform()
 
 class ZarrSegmentationDataset(IterableDataset):
     """
@@ -370,7 +378,7 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
         raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
         label_tensor = torch.from_numpy(final_label_slice).long()
         
-        return raw_tensor.expand(3, -1, -1), label_tensor
+        return transform(raw_tensor.expand(3, -1, -1)), label_tensor
 
 
 def build_data_loader(
