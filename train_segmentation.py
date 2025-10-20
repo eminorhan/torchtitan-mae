@@ -88,7 +88,7 @@ def main(job_config: JobConfig):
     data_loader = build_data_loader(
         job_config.training.batch_size,
         job_config.data.dataset_folder,
-        (job_config.model.crop_size, job_config.model.crop_size),
+        (job_config.model.crop_size, job_config.model.crop_size, job_config.model.crop_size),  # TODO: make this more generic
         dp_rank,
         job_config.data.base_seed
     )
@@ -161,8 +161,8 @@ def main(job_config: JobConfig):
     # loss function (cross entropy)
     def loss_fn(preds, labels):
         # resample predictions if necessary
-        if preds.shape[-2:] != labels.shape[-2:]:
-            preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+        if preds.shape[-3:] != labels.shape[-3:]:
+            preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)  # TODO: make this more generic
         return torch.nn.functional.cross_entropy(preds, labels)
 
     # train loop
@@ -205,6 +205,7 @@ def main(job_config: JobConfig):
             #         vis = vis.expand(-1, 3, -1, -1)
 
             #         save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+            
             # model.train()
             # # ###### end visualize
             

@@ -36,7 +36,7 @@ export GPUS_PER_NODE=4
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=3442
 
-CONFIG_FILE=${CONFIG_FILE:-"./train_configs/dinov3_segmentor.toml"}
+CONFIG_FILE=${CONFIG_FILE:-"./train_configs/dinov3_3d_segmentor.toml"}
 BASE_SEED=$((RANDOM % 9223372036854775807))
 
 srun torchrun --nnodes $SLURM_NNODES --nproc_per_node 4 --max_restarts 1 --node_rank $SLURM_NODEID --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$MASTER_ADDR:$MASTER_PORT" ./train_segmentation.py --job.config_file ${CONFIG_FILE} --data.base_seed ${BASE_SEED}

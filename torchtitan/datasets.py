@@ -16,7 +16,13 @@ def make_transform():
     normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     return v2.Compose([to_float, normalize])
 
+def make_transform_3d():
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(mean=(0.449,), std=(0.226,))
+    return v2.Compose([to_float, normalize])
+
 transform = make_transform()
+transform_3d = make_transform_3d()
 
 class ZarrSegmentationDataset(IterableDataset):
     """
@@ -252,9 +258,9 @@ class ZarrSegmentationDataset(IterableDataset):
 
         # Add channel axis (TODO: need to add input/label transformations here)
         raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...]).float() / 255.0
-        label_tensor = torch.from_numpy(final_label_mask[np.newaxis, ...]).long()
+        label_tensor = torch.from_numpy(final_label_mask).long()
 
-        return raw_tensor, label_tensor
+        return transform_3d(raw_tensor), label_tensor
 
     def __iter__(self):
         while True:
