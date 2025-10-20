@@ -26,6 +26,143 @@ from torchvision.utils import save_image
 
 from dinov3.eval.segmentation.models import build_segmentation_decoder
 
+# visualization related imports
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
+
+def visualize_slices(
+        inputs: torch.Tensor,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        num_classes: int,
+        sample_idx: int = 0,
+        num_slices_to_show: int = 7,
+    ):
+    """
+    Visualizes slices from a 3D volume with predicted and ground truth masks.
+
+    Args:
+        inputs (torch.Tensor): The input volume tensor (B, C, D, H, W). Assumes the first channel is the image data.
+        preds (torch.Tensor): The model output logits (B, num_classes, D, H, W).
+        targets (torch.Tensor): The ground truth labels (B, 1, D, H, W).
+        num_classes (int): The total number of segmentation classes.
+        sample_idx (int): The index of the sample in the batch to visualize.
+        num_slices_to_show (int): Number of slices to display from the volume.
+    """
+    # 1. Convert prediction logits to discrete class labels
+    pred_masks = torch.argmax(preds, dim=1)  # Shape: (B, D, H, W)
+
+    # 2. Select a single sample from the batch to visualize
+    input_sample = inputs[sample_idx]
+    pred_mask_sample = pred_masks[sample_idx]
+    target_mask_sample = targets[sample_idx]
+
+    # 3. Move tensors to CPU and convert to NumPy for plotting
+    # We only need the first channel of the input for grayscale visualization
+    input_image = input_sample[0].cpu().numpy()
+    pred_mask = pred_mask_sample.cpu().numpy()
+    # Squeeze the channel dimension from the target mask
+    target_mask = target_mask_sample.cpu().numpy()
+
+    # 4. Create a consistent colormap for all classes
+    # We create N distinct colors. Class 0 (background) is made fully transparent.
+    colors = plt.cm.get_cmap('viridis', num_classes)
+    new_colors = colors(np.linspace(0, 1, num_classes))
+    new_colors[0, :] = np.array([0, 0, 0, 0])  # Set background class (index 0) to transparent
+    custom_cmap = ListedColormap(new_colors)
+    
+    # Define boundaries for the colormap to ensure integer mapping
+    bounds = np.arange(-0.5, num_classes, 1)
+    norm = BoundaryNorm(bounds, custom_cmap.N)
+
+
+    # 5. Set up the plot
+    fig, axes = plt.subplots(2, num_slices_to_show, figsize=(15, 6))
+
+    # Calculate indices for evenly spaced slices
+    depth = input_image.shape[0]
+    slice_indices = np.linspace(0, depth - 1, num_slices_to_show, dtype=int)
+
+    for i, slice_idx in enumerate(slice_indices):
+        # --- Top Row: Predictions ---
+        ax = axes[0, i]
+        ax.imshow(input_image[slice_idx], cmap='gray')
+        # Overlay the predicted mask with transparency
+        ax.imshow(pred_mask[slice_idx], cmap=custom_cmap, norm=norm, alpha=0.1)
+        ax.set_title(f"Prediction\nSlice {slice_idx}")
+        ax.axis('off')
+
+        # --- Bottom Row: Ground Truth ---
+        ax = axes[1, i]
+        ax.imshow(input_image[slice_idx], cmap='gray')
+        # Overlay the ground truth mask with transparency
+        ax.imshow(target_mask[slice_idx], cmap=custom_cmap, norm=norm, alpha=0.1)
+        ax.set_title(f"Ground Truth\nSlice {slice_idx}")
+        ax.axis('off')
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(f"example.jpeg", bbox_inches='tight')
+
+
+def visualize_slices_2d(
+    inputs: torch.Tensor,
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int,
+    step: int,
+    ):
+    """
+    Visualizes all 2D images in a batch with their predicted and ground truth masks.
+
+    Args:
+        inputs (torch.Tensor): The input image tensor (B, C, H, W). Assumes the first channel is the image data.
+        preds (torch.Tensor): The model output logits (B, num_classes, H, W).
+        targets (torch.Tensor): The ground truth labels (B, 1, H, W).
+        num_classes (int): The total number of segmentation classes.
+        suptitle (str): The main title for the entire plot.
+    """
+    # 1. Get batch size
+    batch_size = inputs.shape[0]
+
+    # 2. Convert prediction logits to discrete class labels
+    pred_masks = torch.argmax(preds, dim=1)  # Shape: (B, H, W)
+
+    # 3. Create a consistent colormap for all classes
+    colors = plt.cm.get_cmap('viridis', num_classes)
+    new_colors = colors(np.linspace(0, 1, num_classes))
+    new_colors[0, :] = np.array([0, 0, 0, 0])
+    custom_cmap = ListedColormap(new_colors)
+    bounds = np.arange(-0.5, num_classes, 1)
+    norm = BoundaryNorm(bounds, custom_cmap.N)
+
+    # 4. Set up the plot for the entire batch. `squeeze=False` ensures axes is always 2D.
+    fig, axes = plt.subplots(2, batch_size, figsize=(batch_size * 4, 8.5), squeeze=False)
+
+    # 5. Loop through each sample in the batch
+    for i in range(batch_size):
+        # --- Prepare data for the i-th sample ---
+        input_image = inputs[i, 0].cpu().numpy()
+        pred_mask = pred_masks[i].cpu().numpy()
+        target_mask = targets[i].cpu().numpy() # Extract from channel dim
+
+        # --- Top Row: Prediction ---
+        ax = axes[0, i]
+        ax.imshow(input_image, cmap='gray')
+        ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=0.3)
+        ax.set_title(f"Prediction (Sample {i})")
+        ax.axis('off')
+
+        # --- Bottom Row: Ground Truth ---
+        ax = axes[1, i]
+        ax.imshow(input_image, cmap='gray')
+        ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=0.3)
+        ax.set_title(f"Ground Truth (Sample {i})")
+        ax.axis('off')
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(f"step_{step}_2d.jpeg", bbox_inches='tight')
+
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
     @contextlib.contextmanager
@@ -88,7 +225,7 @@ def main(job_config: JobConfig):
     data_loader = build_data_loader(
         job_config.training.batch_size,
         job_config.data.dataset_folder,
-        (job_config.model.crop_size, job_config.model.crop_size, job_config.model.crop_size),  # TODO: make this more generic
+        (job_config.model.crop_size, job_config.model.crop_size),  # TODO: make this more generic
         dp_rank,
         job_config.data.base_seed
     )
@@ -158,11 +295,17 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
-    # loss function (cross entropy)
+    # # loss function (cross entropy)
+    # def loss_fn(preds, labels):
+    #     # resample predictions if necessary
+    #     if preds.shape[-3:] != labels.shape[-3:]:
+    #         preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)  # TODO: make this more generic
+    #     return torch.nn.functional.cross_entropy(preds, labels)
+
     def loss_fn(preds, labels):
         # resample predictions if necessary
-        if preds.shape[-3:] != labels.shape[-3:]:
-            preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)  # TODO: make this more generic
+        if preds.shape[-2:] != labels.shape[-2:]:
+            preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-2:], mode="bilinear", align_corners=False)  # TODO: make this more generic
         return torch.nn.functional.cross_entropy(preds, labels)
 
     # train loop
@@ -188,26 +331,38 @@ def main(job_config: JobConfig):
 
             optimizers.zero_grad()
 
-            # # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            # model.eval()
-            # with torch.no_grad():
-            #     _, comparison = model(batch, visualize=True)
+            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
+            if train_state.step % 1 == 0:
+                model.eval()
+                with torch.no_grad():
+                    preds = model(inputs)
+                    preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-2:], mode="bilinear", align_corners=False)
+                    # print(f"Inputs/preds/targets shape: {inputs.shape}/{preds.shape}/{targets.shape}")
 
-            #     if torch.distributed.get_rank() == 0:
+                    if torch.distributed.get_rank() == 0:
+                        visualize_slices_2d(
+                            inputs,
+                            preds,
+                            targets,
+                            64,
+                            train_state.step
+                        )
 
-            #         comparison = comparison[0].permute(0, 2, 1, 3, 4)
+                    # if torch.distributed.get_rank() == 0:
 
-            #         a = comparison[0, ::(model_config.img_size // 8), :, :, :]
-            #         b = comparison[1, ::(model_config.img_size // 8), :, :, :]
-            #         c = comparison[2, ::(model_config.img_size // 8), :, :, :]
+                    #     comparison = comparison[0].permute(0, 2, 1, 3, 4)
 
-            #         vis = torch.cat((a, b, c), 0)
-            #         vis = vis.expand(-1, 3, -1, -1)
+                    #     a = comparison[0, ::(model_config.img_size // 8), :, :, :]
+                    #     b = comparison[1, ::(model_config.img_size // 8), :, :, :]
+                    #     c = comparison[2, ::(model_config.img_size // 8), :, :, :]
 
-            #         save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
-            
-            # model.train()
-            # # ###### end visualize
+                    #     vis = torch.cat((a, b, c), 0)
+                    #     vis = vis.expand(-1, 3, -1, -1)
+
+                    #     save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+
+                model.train()
+            # ###### end visualize
             
             # run forward / backward
             with train_context():
