@@ -67,7 +67,7 @@ def visualize_slices(
 
     # 4. Create a consistent colormap for all classes
     # We create N distinct colors. Class 0 (background) is made fully transparent.
-    colors = plt.cm.get_cmap('viridis', num_classes)
+    colors = plt.cm.get_cmap('gist_ncar', num_classes)
     new_colors = colors(np.linspace(0, 1, num_classes))
     new_colors[0, :] = np.array([0, 0, 0, 0])  # Set background class (index 0) to transparent
     custom_cmap = ListedColormap(new_colors)
@@ -129,7 +129,7 @@ def visualize_slices_2d(
     pred_masks = torch.argmax(preds, dim=1)  # Shape: (B, H, W)
 
     # 3. Create a consistent colormap for all classes
-    colors = plt.cm.get_cmap('viridis', num_classes)
+    colors = plt.cm.get_cmap('gist_ncar', num_classes)
     new_colors = colors(np.linspace(0, 1, num_classes))
     new_colors[0, :] = np.array([0, 0, 0, 0])
     custom_cmap = ListedColormap(new_colors)

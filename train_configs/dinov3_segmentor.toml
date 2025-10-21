@@ -20,7 +20,7 @@ head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
 backbone_pretrained = true
 num_classes = 64 
-crop_size = 512
+crop_size = 1024
 
 [data]
 dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
