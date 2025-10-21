@@ -36,8 +36,9 @@ def visualize_slices(
         preds: torch.Tensor,
         targets: torch.Tensor,
         num_classes: int,
+        step: int,
         sample_idx: int = 0,
-        num_slices_to_show: int = 7,
+        num_slices_to_show: int = 8,
     ):
     """
     Visualizes slices from a 3D volume with predicted and ground truth masks.
@@ -76,7 +77,6 @@ def visualize_slices(
     bounds = np.arange(-0.5, num_classes, 1)
     norm = BoundaryNorm(bounds, custom_cmap.N)
 
-
     # 5. Set up the plot
     fig, axes = plt.subplots(2, num_slices_to_show, figsize=(15, 6))
 
@@ -102,7 +102,7 @@ def visualize_slices(
         ax.axis('off')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(f"example.jpeg", bbox_inches='tight')
+    plt.savefig(f"step_{step}_3d.jpeg", bbox_inches='tight')
 
 
 def visualize_slices_2d(
@@ -120,7 +120,6 @@ def visualize_slices_2d(
         preds (torch.Tensor): The model output logits (B, num_classes, H, W).
         targets (torch.Tensor): The ground truth labels (B, 1, H, W).
         num_classes (int): The total number of segmentation classes.
-        suptitle (str): The main title for the entire plot.
     """
     # 1. Get batch size
     batch_size = inputs.shape[0]
@@ -221,11 +220,13 @@ def main(job_config: JobConfig):
     else:
         dp_degree, dp_rank = 1, 0
 
+    assert len(job_config.model.crop_size) in (2, 3), f"model.crop_size must have 2 or 3 elements, but got {len(job_config.model.crop_size)}"
+
     # build dataloader
     data_loader = build_data_loader(
         job_config.training.batch_size,
         job_config.data.dataset_folder,
-        (job_config.model.crop_size, job_config.model.crop_size),  # TODO: make this more generic
+        tuple(job_config.model.crop_size),
         dp_rank,
         job_config.data.base_seed
     )
@@ -257,7 +258,7 @@ def main(job_config: JobConfig):
     lr_schedulers = build_lr_schedulers(optimizers.optimizers, job_config)
 
     train_state = TrainState()
-
+    
     # load initial checkpoint
     checkpoint = CheckpointManager(
         model_parts=model_parts,
@@ -295,18 +296,19 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
-    # # loss function (cross entropy)
-    # def loss_fn(preds, labels):
-    #     # resample predictions if necessary
-    #     if preds.shape[-3:] != labels.shape[-3:]:
-    #         preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)  # TODO: make this more generic
-    #     return torch.nn.functional.cross_entropy(preds, labels)
-
-    def loss_fn(preds, labels):
-        # resample predictions if necessary
-        if preds.shape[-2:] != labels.shape[-2:]:
-            preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-2:], mode="bilinear", align_corners=False)  # TODO: make this more generic
-        return torch.nn.functional.cross_entropy(preds, labels)
+    # cross-entropy loss for 2D or 3D data
+    if len(job_config.model.crop_size) == 2:
+        def loss_fn(preds, labels):
+            # resample predictions if necessary
+            if preds.shape[-2:] != labels.shape[-2:]:
+                preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+            return torch.nn.functional.cross_entropy(preds, labels)
+    else:
+        def loss_fn(preds, labels):
+            # resample predictions if necessary
+            if preds.shape[-3:] != labels.shape[-3:]:
+                preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)
+            return torch.nn.functional.cross_entropy(preds, labels)
 
     # train loop
     logger.info(
@@ -340,26 +342,22 @@ def main(job_config: JobConfig):
                     # print(f"Inputs/preds/targets shape: {inputs.shape}/{preds.shape}/{targets.shape}")
 
                     if torch.distributed.get_rank() == 0:
-                        visualize_slices_2d(
-                            inputs,
-                            preds,
-                            targets,
-                            64,
-                            train_state.step
-                        )
-
-                    # if torch.distributed.get_rank() == 0:
-
-                    #     comparison = comparison[0].permute(0, 2, 1, 3, 4)
-
-                    #     a = comparison[0, ::(model_config.img_size // 8), :, :, :]
-                    #     b = comparison[1, ::(model_config.img_size // 8), :, :, :]
-                    #     c = comparison[2, ::(model_config.img_size // 8), :, :, :]
-
-                    #     vis = torch.cat((a, b, c), 0)
-                    #     vis = vis.expand(-1, 3, -1, -1)
-
-                    #     save_image(vis, f'sample.jpg', nrow=8, padding=1, normalize=True, scale_each=True)
+                        if len(job_config.model.crop_size) == 2:
+                            visualize_slices_2d(
+                                inputs,
+                                preds,
+                                targets,
+                                job_config.model.num_classes,
+                                train_state.step
+                            )
+                        else:
+                            visualize_slices(
+                                inputs,
+                                preds,
+                                targets,
+                                job_config.model.num_classes,
+                                train_state.step,
+                            )
 
                 model.train()
             # ###### end visualize
