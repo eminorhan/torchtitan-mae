@@ -160,7 +160,7 @@ def visualize_slices_2d(
         ax.set_title(f"Ground Truth (Sample {i})")
         ax.axis('off')
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.tight_layout()
     plt.savefig(f"step_{step}_2d.jpeg", bbox_inches='tight')
 
 
@@ -332,7 +332,7 @@ def main(job_config: JobConfig):
             optimizers.zero_grad()
 
             # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            if train_state.step % 1 == 0:
+            if train_state.step % 100 == 0:
                 model.eval()
                 with torch.no_grad():
                     preds = model(inputs)

@@ -10,7 +10,7 @@ save_traces_folder = "profile_trace"
 profile_freq = 10
 
 [metrics]
-log_freq = 1
+log_freq = 500
 enable_tensorboard = false
 save_tb_folder = "tb"
 
