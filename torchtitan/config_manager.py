@@ -85,7 +85,7 @@ class JobConfig:
         self.parser.add_argument("--model.dinov3_repo_folder", type=str, default="/lustre/gale/stf218/scratch/emin/dinov3", help="Local path to DINOv3 repo (to be used for model definitions)")
         self.parser.add_argument("--model.backbone_pretrained", action="store_true", help="Whether to use the pretrained backbone")
         self.parser.add_argument("--model.num_classes", type=int, default=48, help="Number of classes in output head")
-        self.parser.add_argument("--model.crop_size", type=int, narg='+', default=[512], help="Size of crops (can be [int, int] or [int, int, int])")
+        self.parser.add_argument("--model.crop_size", type=int, nargs='+', default=[512], help="Size of crops (can be [int, int] or [int, int, int])")
 
         # data configs
         self.parser.add_argument("--data.dataset_folder", type=str, default="/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data", help="Root directory for the dataset")

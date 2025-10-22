@@ -395,7 +395,7 @@ def build_data_loader(
     base_seed: int = 0
 ) -> DataLoader:
     """
-    Builds a volume EM data loader for distributed training.
+    Builds a 2D or 3D data loader for EM data.
 
     Args:
         batch_size (int): The batch size for the data loader.
