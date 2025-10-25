@@ -31,6 +31,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
+
+def print_parameter_status(model):
+    """
+    Iterates over all named parameters of a PyTorch model and prints their
+    name and whether they require a gradient (i.e., are being trained).
+    """
+    print("Parameter Training Status:")
+    print("-" * 30)
+    for name, param in model.named_parameters():
+        # param.requires_grad is a boolean indicating if gradients
+        # are computed for this parameter during backpropagation.
+        status = "TRAINING" if param.requires_grad else "FROZEN"
+        print(f"{name:<50} | Requires Grad: {param.requires_grad} ({status})")
+    print("-" * 30)
+    print("\n")
+
+
 def visualize_slices(
         inputs: torch.Tensor,
         preds: torch.Tensor,
@@ -148,14 +165,14 @@ def visualize_slices_2d(
         # --- Top Row: Prediction ---
         ax = axes[0, i]
         ax.imshow(input_image, cmap='gray')
-        ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=0.3)
+        ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=0.1)
         ax.set_title(f"Prediction (Sample {i})")
         ax.axis('off')
 
         # --- Bottom Row: Ground Truth ---
         ax = axes[1, i]
         ax.imshow(input_image, cmap='gray')
-        ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=0.3)
+        ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=0.1)
         ax.set_title(f"Ground Truth (Sample {i})")
         ax.axis('off')
 
@@ -318,6 +335,10 @@ def main(job_config: JobConfig):
         f"total steps {job_config.training.steps} "
         f"(warmup {job_config.training.warmup_steps})"
     )
+
+    if torch.distributed.get_rank() == 0:
+        print_parameter_status(model)  # check if the parameters are being trained or frozen
+
     with maybe_enable_profiling(job_config, global_step=train_state.step) as torch_profiler, maybe_enable_memory_snapshot(job_config, global_step=train_state.step) as memory_profiler:
         while train_state.step < job_config.training.steps:
             train_state.step += 1
