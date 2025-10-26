@@ -37,15 +37,13 @@ def print_parameter_status(model):
     Iterates over all named parameters of a PyTorch model and prints their
     name and whether they require a gradient (i.e., are being trained).
     """
-    print("Parameter Training Status:")
-    print("-" * 30)
+    logger.info("Parameter Training Status:")
+    logger.info("-" * 30)
     for name, param in model.named_parameters():
-        # param.requires_grad is a boolean indicating if gradients
-        # are computed for this parameter during backpropagation.
         status = "TRAINING" if param.requires_grad else "FROZEN"
-        print(f"{name:<50} | Requires Grad: {param.requires_grad} ({status})")
-    print("-" * 30)
-    print("\n")
+        logger.info(f"{name:<50} | Requires Grad: {param.requires_grad} ({status})")
+    logger.info("-" * 30)
+    logger.info("\n")
 
 
 def visualize_slices(
@@ -355,15 +353,15 @@ def main(job_config: JobConfig):
             optimizers.zero_grad()
 
             # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            if train_state.step % 100 == 0:
+            if train_state.step % job_config.metrics.log_freq == 0:
                 model.eval()
                 with torch.no_grad():
                     preds = model(inputs)
-                    preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-2:], mode="bilinear", align_corners=False)
                     # print(f"Inputs/preds/targets shape: {inputs.shape}/{preds.shape}/{targets.shape}")
 
                     if torch.distributed.get_rank() == 0:
                         if len(job_config.model.crop_size) == 2:
+                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-2:], mode="bilinear", align_corners=False)
                             visualize_slices_2d(
                                 inputs,
                                 preds,
@@ -372,6 +370,7 @@ def main(job_config: JobConfig):
                                 train_state.step
                             )
                         else:
+                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-3:], mode="trilinear", align_corners=False)
                             visualize_slices(
                                 inputs,
                                 preds,
