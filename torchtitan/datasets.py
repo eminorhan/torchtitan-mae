@@ -11,7 +11,7 @@ from torch.utils.data import IterableDataset, DataLoader
 from torchvision.transforms import v2
 
 
-def make_transform():
+def make_transform_2d():
     to_float = v2.ToDtype(torch.float32, scale=True)
     normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     return v2.Compose([to_float, normalize])
@@ -21,10 +21,10 @@ def make_transform_3d():
     normalize = v2.Normalize(mean=(0.449,), std=(0.226,))
     return v2.Compose([to_float, normalize])
 
-transform = make_transform()
+transform_2d = make_transform_2d()
 transform_3d = make_transform_3d()
 
-class ZarrSegmentationDataset(IterableDataset):
+class ZarrSegmentationDataset3D(IterableDataset):
     """
     A simple dataloader for 3D EM segmentation datasets stored in Zarr format.
 
@@ -32,7 +32,7 @@ class ZarrSegmentationDataset(IterableDataset):
     and their corresponding labeled segmentation crops. It returns fixed-size
     crops suitable for training deep learning models.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, raw_scale='s0', labels_scale='s0'):
+    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0'):
         """
         Initializes the dataset by scanning for valid data samples.
 
@@ -41,6 +41,7 @@ class ZarrSegmentationDataset(IterableDataset):
             crop_size (tuple, optional): The desired (Z, Y, X) output size of the raw and label crops.
             rank (int): Rank of this process.
             base_seed (int): A base seed for reproducibility.
+            val_split (float, optional): Fraction of data to use for validation. Defaults to 0.01.
             raw_scale (str, optional): Resolution for raw data. Defaults to 's0' (highest resolution).
             labels_scale (str, optional): Resolution for labels. Defaults to 's0' (highest resolution).
         """
@@ -50,14 +51,20 @@ class ZarrSegmentationDataset(IterableDataset):
         self.rank = rank
         self.raw_scale = raw_scale
         self.labels_scale = labels_scale
-        self.samples = self._find_samples()
 
         # set rng for this rank (base_seed will change from run to run)
         self.rng = np.random.default_rng(base_seed + self.rank)
 
-        if not self.samples:
-            print(f"Warning: No valid samples found in {self.root_dir}. Please check the directory structure and file paths.")
+        # find and split the samples
+        all_samples = self._find_samples()
 
+        # split the data into training and validation sets
+        split_idx = int(len(all_samples) * (1 - val_split))
+        self.train_samples = all_samples[:split_idx]
+        self.val_samples = all_samples[split_idx:]
+
+        print(f"Dataset initialized: {len(self.train_samples)} training samples, {len(self.val_samples)} validation samples.")
+    
     def _find_samples(self):
         """
         Scans the root directory to find all (raw_volume_group, label_crop) pairs.
@@ -161,11 +168,10 @@ class ZarrSegmentationDataset(IterableDataset):
             highest_res_scale = min(available_scales, key=lambda s: sum(s['scale']))
             return highest_res_scale['path'], highest_res_scale['scale'], highest_res_scale['translation']
 
-    def _get_sample(self):
+    def _get_sample(self, sample_info):
         """
         Fetches a single raw crop and its corresponding segmentation mask, both at a fixed output size.
         """
-        sample_info = sample_info = self.rng.choice(self.samples)
        
         zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
         label_array = zarr_root[sample_info['label_path']]
@@ -264,15 +270,23 @@ class ZarrSegmentationDataset(IterableDataset):
 
     def __iter__(self):
         while True:
-            yield self._get_sample()
+            # Randomly select a sample from the training set
+            sample_info = self.rng.choice(self.train_samples)
+            yield self._get_sample(sample_info)
+
+    # Separate iterator for the validation set
+    def validation_iterator(self):
+        """The validation iterator. Yields each validation sample exactly once."""
+        for sample_info in self.val_samples:
+            yield self._get_sample(sample_info)
 
 
-class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
+class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
     """
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
     It inherits seeding and iteration logic from its 3D parent class.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, raw_scale='s0', labels_scale='s0'):
+    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0'):
         """
         Initializes the 2D dataloader.
 
@@ -281,21 +295,19 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
             crop_size (tuple): Desired (H, W) output size for 2D slices.
             rank (int): The distributed rank of the current process.
             base_seed (int): A base seed for reproducibility.
+            val_split (float, optional): Fraction of data to use for validation. Defaults to 0.01.
             raw_scale (str, optional): Default highest-resolution scale for raw data.
             labels_scale (str, optional): Scale level for labels.
         """
         # Call the parent constructor, but we will use our own 2D crop_size.
         # The parent's crop_size will be ignored since we override _get_single_item.
-        super().__init__(root_dir, None, rank, base_seed, raw_scale='s0', labels_scale='s0')
+        super().__init__(root_dir, None, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0')
         self.crop_size = crop_size # This is a 2D tuple (H, W)
 
-    def _get_sample(self):
+    def _get_sample(self, sample_info):
         """
-        Fetches a single random 2D slice, loading it directly from the Zarr store.
-        This method overrides the parent class's method.
+        Fetches a single 2D slice, loading it directly from the Zarr store. This method overrides the parent class's method.
         """
-        # Randomly select a 3D volume, axis, and slice index
-        sample_info = self.rng.choice(self.samples)
         zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
         label_array_3d = zarr_root[sample_info['label_path']]
         shape_3d = label_array_3d.shape
@@ -384,7 +396,7 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset):
         raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
         label_tensor = torch.from_numpy(final_label_slice).long()
         
-        return transform(raw_tensor.expand(3, -1, -1)), label_tensor
+        return transform_2d(raw_tensor.expand(3, -1, -1)), label_tensor
 
 
 def build_data_loader(
@@ -407,7 +419,7 @@ def build_data_loader(
     """
     # We pick out 2D or 3D dataset class based on the crop_size argument
     if len(crop_size) == 3:
-        dataset = ZarrSegmentationDataset(
+        dataset = ZarrSegmentationDataset3D(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,

@@ -250,6 +250,9 @@ def main(job_config: JobConfig):
     backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", pretrained=False)
     model = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
+    if torch.distributed.get_rank() == 0:
+        logger.info(f"Model: {model}")  # check if the parameters are being trained or frozen
+
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
     # swap to Float8Linear based on float8 configs
@@ -355,26 +358,39 @@ def main(job_config: JobConfig):
             # ###### visualize (NOTE: this is for debug purposes, will be removed later)
             if train_state.step % job_config.metrics.log_freq == 0:
                 model.eval()
+                total_val_loss = 0
+                num_val_samples = 0
                 with torch.no_grad():
-                    preds = model(inputs)
-                    # print(f"Inputs/preds/targets shape: {inputs.shape}/{preds.shape}/{targets.shape}")
+                    # TODO: a bit hacky, ideally we should have separate train/val loaders
+                    for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
+                        val_inputs = val_inputs.unsqueeze(0).cuda()
+                        val_targets = val_targets.unsqueeze(0).cuda()
+                        val_preds = model(val_inputs) 
+                        val_loss = loss_fn(val_preds, val_targets)
+                        total_val_loss += val_loss.item()
+                        num_val_samples += 1
+        
+                    avg_val_loss = total_val_loss / num_val_samples
+                    avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
 
+                    # visualize some examples
                     if torch.distributed.get_rank() == 0:
+                        logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
                         if len(job_config.model.crop_size) == 2:
-                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-2:], mode="bilinear", align_corners=False)
+                            preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-2:], mode="bilinear", align_corners=False)
                             visualize_slices_2d(
-                                inputs,
-                                preds,
-                                targets,
+                                val_inputs,
+                                val_preds,
+                                val_targets,
                                 job_config.model.num_classes,
                                 train_state.step
                             )
                         else:
-                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-3:], mode="trilinear", align_corners=False)
+                            preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-3:], mode="trilinear", align_corners=False)
                             visualize_slices(
-                                inputs,
-                                preds,
-                                targets,
+                                val_inputs,
+                                val_preds,
+                                val_targets,
                                 job_config.model.num_classes,
                                 train_state.step,
                             )
@@ -406,7 +422,7 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # log metrics
+            # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
                 losses = [loss.item() for loss in losses_since_last_log]
                 avg_loss, max_loss = sum(losses) / len(losses), max(losses)
