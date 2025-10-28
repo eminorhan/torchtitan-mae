@@ -46,7 +46,7 @@ def print_parameter_status(model):
     logger.info("\n")
 
 
-def visualize_slices(
+def visualize_slices_3d(
         inputs: torch.Tensor,
         preds: torch.Tensor,
         targets: torch.Tensor,
@@ -377,7 +377,7 @@ def main(job_config: JobConfig):
                     if torch.distributed.get_rank() == 0:
                         logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
                         if len(job_config.model.crop_size) == 2:
-                            preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-2:], mode="bilinear", align_corners=False)
+                            val_preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-2:], mode="bilinear", align_corners=False)
                             visualize_slices_2d(
                                 val_inputs,
                                 val_preds,
@@ -386,8 +386,8 @@ def main(job_config: JobConfig):
                                 train_state.step
                             )
                         else:
-                            preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-3:], mode="trilinear", align_corners=False)
-                            visualize_slices(
+                            val_preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-3:], mode="trilinear", align_corners=False)
+                            visualize_slices_3d(
                                 val_inputs,
                                 val_preds,
                                 val_targets,
