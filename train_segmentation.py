@@ -354,49 +354,6 @@ def main(job_config: JobConfig):
             targets = targets.cuda()
 
             optimizers.zero_grad()
-
-            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            if train_state.step % job_config.metrics.log_freq == 0:
-                model.eval()
-                total_val_loss = 0
-                num_val_samples = 0
-                with torch.no_grad():
-                    # TODO: a bit hacky, ideally we should have separate train/val loaders
-                    for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
-                        val_inputs = val_inputs.unsqueeze(0).cuda()
-                        val_targets = val_targets.unsqueeze(0).cuda()
-                        val_preds = model(val_inputs) 
-                        val_loss = loss_fn(val_preds, val_targets)
-                        total_val_loss += val_loss.item()
-                        num_val_samples += 1
-        
-                    avg_val_loss = total_val_loss / num_val_samples
-                    avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
-
-                    # visualize some examples
-                    if torch.distributed.get_rank() == 0:
-                        logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
-                        if len(job_config.model.crop_size) == 2:
-                            val_preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-2:], mode="bilinear", align_corners=False)
-                            visualize_slices_2d(
-                                val_inputs,
-                                val_preds,
-                                val_targets,
-                                job_config.model.num_classes,
-                                train_state.step
-                            )
-                        else:
-                            val_preds = torch.nn.functional.interpolate(input=val_preds, size=val_targets.shape[-3:], mode="trilinear", align_corners=False)
-                            visualize_slices_3d(
-                                val_inputs,
-                                val_preds,
-                                val_targets,
-                                job_config.model.num_classes,
-                                train_state.step,
-                            )
-
-                model.train()
-            # ###### end visualize
             
             # run forward / backward
             with train_context():
@@ -421,6 +378,49 @@ def main(job_config: JobConfig):
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
 
             losses_since_last_log.append(loss)
+
+            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
+            if train_state.step % job_config.metrics.log_freq == 0:
+                model.eval()
+                total_val_loss = 0
+                num_val_samples = 0
+                with torch.no_grad():
+                    # TODO: a bit hacky, ideally we should have separate train/val loaders
+                    for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
+                        val_inputs = val_inputs.unsqueeze(0).cuda()
+                        val_targets = val_targets.unsqueeze(0).cuda()
+                        val_preds = model(val_inputs) 
+                        val_loss = loss_fn(val_preds, val_targets)
+                        total_val_loss += val_loss.item()
+                        num_val_samples += 1
+        
+                    avg_val_loss = total_val_loss / num_val_samples
+                    avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
+
+                    # visualize some examples
+                    if torch.distributed.get_rank() == 0:
+                        logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
+                        if len(job_config.model.crop_size) == 2:
+                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-2:], mode="bilinear", align_corners=False)
+                            visualize_slices_2d(
+                                inputs,
+                                preds,
+                                targets,
+                                job_config.model.num_classes,
+                                train_state.step
+                            )
+                        else:
+                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-3:], mode="trilinear", align_corners=False)
+                            visualize_slices_3d(
+                                inputs,
+                                preds,
+                                targets,
+                                job_config.model.num_classes,
+                                train_state.step,
+                            )
+
+                model.train()
+            # ###### end visualize
 
             # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
