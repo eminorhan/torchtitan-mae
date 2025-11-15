@@ -11,13 +11,12 @@ DECODER_TYPE = "linear"  # segmentation head type
 NUM_CLASSES = 64  # number of classes in cellmap semantic segmentation task
 
 BACKBONE_CKPT_DICT = {
-    "dinov3_vit7b_3D16": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
-    # "dinov3_vit7b16": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
-    # "dinov3_vith16plus": "dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth",
-    # "dinov3_vitl16": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
-    # "dinov3_vitb16": "dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
-    # "dinov3_vits16plus": "dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",
-    # "dinov3_vits16": "dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+    "dinov3_vit7b16_3D": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
+    "dinov3_vit7b16": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
+    "dinov3_vith16plus_3D": "dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth",
+    "dinov3_vith16plus": "dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth",
+    "dinov3_vitl16_3D": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+    "dinov3_vitl16": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
 }
 
 BACKBONE_PTH_ROOT = "/lustre/gale/stf218/scratch/emin/torch_hub/checkpoints"
