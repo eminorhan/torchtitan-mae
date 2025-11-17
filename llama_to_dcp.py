@@ -8,7 +8,7 @@ from pathlib import Path
 TORCH_HUB_PATH = "/lustre/gale/stf218/scratch/emin/torch_hub"  # this is where the dinov3 pth checkpoints are stored
 DINOV3_REPO_PATH = "/lustre/gale/stf218/scratch/emin/dinov3"  # dinov3 repo path
 DECODER_TYPE = "linear"  # segmentation head type
-NUM_CLASSES = 64  # number of classes in cellmap semantic segmentation task
+NUM_CLASSES = 64  # number of classes in semantic segmentation task
 
 BACKBONE_CKPT_DICT = {
     "dinov3_vit7b16_3D": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",

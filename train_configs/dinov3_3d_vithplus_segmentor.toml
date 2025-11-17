@@ -27,7 +27,7 @@ dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challeng
 
 [optimizer]
 name = "AdamW"
-lr = 3e-4
+lr = 3e-5
 
 [training]
 batch_size = 1
