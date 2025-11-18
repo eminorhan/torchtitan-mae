@@ -10,7 +10,7 @@ save_traces_folder = "profile_trace"
 profile_freq = 10
 
 [metrics]
-log_freq = 100
+log_freq = 50
 enable_tensorboard = false
 save_tb_folder = "tb"
 
@@ -20,14 +20,14 @@ head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
 backbone_pretrained = true
 num_classes = 64 
-crop_size = [448, 448, 448]
+crop_size = [480, 480, 480]
 
 [data]
 dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
 
 [optimizer]
 name = "AdamW"
-lr = 3e-5
+lr = 3e-4
 
 [training]
 batch_size = 1
@@ -46,7 +46,7 @@ pipeline_parallel_degree = 1
 enable_checkpoint = true
 folder = "checkpoint"
 interval_type = "steps"
-interval = 100
+interval = 1000000
 model_weights_only = false
 export_dtype = "bfloat16"
 async_mode = "async"  # ["disabled", "async", "async_with_pinned_mem"]

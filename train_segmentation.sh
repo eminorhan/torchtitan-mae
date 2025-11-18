@@ -24,6 +24,7 @@ export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
 export GLOO_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
 export NCCL_NET_GDR_LEVEL=3
 export NCCL_CROSS_NIC=1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export HF_HOME="/lustre/gale/stf218/scratch/emin/huggingface"
 export HF_DATASETS_CACHE="/lustre/gale/stf218/scratch/emin/huggingface"
 export TRITON_CACHE_DIR="/lustre/gale/stf218/scratch/emin/triton"
@@ -36,7 +37,7 @@ export GPUS_PER_NODE=4
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=3442
 
-CONFIG_FILE=${CONFIG_FILE:-"./train_configs/dinov3_3d_vit7b_segmentor.toml"}
+CONFIG_FILE=${CONFIG_FILE:-"./train_configs/dinov3_3d_vitl_segmentor.toml"}
 BASE_SEED=$((RANDOM % 9223372036854775807))
 
 srun torchrun --nnodes $SLURM_NNODES --nproc_per_node 4 --max_restarts 1 --node_rank $SLURM_NODEID --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$MASTER_ADDR:$MASTER_PORT" ./train_segmentation.py --job.config_file ${CONFIG_FILE} --data.base_seed ${BASE_SEED}

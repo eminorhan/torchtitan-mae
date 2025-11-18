@@ -55,7 +55,7 @@ def visualize_slices_3d(
         num_classes: int,
         step: int,
         sample_idx: int = 0,
-        overlay_alpha: float = 0.1,
+        overlay_alpha: float = 0.3,
         fps: int = 10
     ):
     """
@@ -96,7 +96,7 @@ def visualize_slices_3d(
     frames = []
     depth = input_image.shape[0]
 
-    for slice_idx in range(0, depth, 2):  # plot every other slice
+    for slice_idx in range(0, depth, 4):  # plot every k-th slice
         fig, axes = plt.subplots(1, 2, figsize=(10, 5))
         # fig.suptitle(f"Slice {slice_idx + 1} / {depth}", fontsize=14)
 
@@ -137,6 +137,7 @@ def visualize_slices_2d(
     targets: torch.Tensor,
     num_classes: int,
     step: int,
+    overlay_alpha: float = 0.3
     ):
     """
     Visualizes all 2D images in a batch with their predicted and ground truth masks.
@@ -174,19 +175,20 @@ def visualize_slices_2d(
         # Top Row: Prediction
         ax = axes[0, i]
         ax.imshow(input_image, cmap='gray')
-        ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=0.1)
+        ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
         ax.set_title(f"Prediction (Sample {i})")
         ax.axis('off')
 
         # Bottom Row: Ground truth
         ax = axes[1, i]
         ax.imshow(input_image, cmap='gray')
-        ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=0.1)
+        ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
         ax.set_title(f"Ground truth (Sample {i})")
         ax.axis('off')
 
     plt.tight_layout()
     plt.savefig(f"step_{step}_2d.jpeg", bbox_inches='tight')
+    plt.close(fig)
 
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
@@ -275,7 +277,7 @@ def main(job_config: JobConfig):
     # move sharded model to CPU/GPU and initialize weights via DTensor
     init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
     model.to(device=init_device)
-    model.train()  # TODO: what to do with this?
+    model.train()
     model_parts = [model]
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
@@ -370,6 +372,8 @@ def main(job_config: JobConfig):
             with train_context():
                 preds = model(inputs)
                 loss = loss_fn(preds, targets)
+                # need to free before bwd to avoid peaking memory
+                del preds
                 loss.backward()
             
             # clip gradients
@@ -390,48 +394,64 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            if train_state.step % job_config.metrics.log_freq == 0:
-                model.eval()
-                total_val_loss = 0
-                num_val_samples = 0
-                with torch.no_grad():
-                    # TODO: a bit hacky, ideally we should have separate train/val loaders
-                    for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
-                        val_inputs = val_inputs.unsqueeze(0).cuda()
-                        val_targets = val_targets.unsqueeze(0).cuda()
-                        val_preds = model(val_inputs) 
-                        val_loss = loss_fn(val_preds, val_targets)
-                        total_val_loss += val_loss.item()
-                        num_val_samples += 1
+            # # ###### visualize (NOTE: this is for debug purposes, will be removed later)
+            # if train_state.step % job_config.metrics.log_freq == 0:
+            #     model.eval()
+            #     total_val_loss = 0
+            #     num_val_samples = 0
+            #     with torch.no_grad():
+            #         # TODO: a bit hacky, ideally we should have separate train/val loaders
+            #         for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
+            #             val_inputs = val_inputs.unsqueeze(0).cuda()
+            #             val_targets = val_targets.unsqueeze(0).cuda()
+            #             val_preds = model(val_inputs) 
+            #             val_loss = loss_fn(val_preds, val_targets)
+            #             total_val_loss += val_loss.item()
+            #             num_val_samples += 1
         
-                    avg_val_loss = total_val_loss / num_val_samples
-                    avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
+            #         avg_val_loss = total_val_loss / num_val_samples
+            #         avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
 
-                    # visualize some examples
-                    if torch.distributed.get_rank() == 0:
-                        logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
-                        if len(job_config.model.crop_size) == 2:
-                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-2:], mode="bilinear", align_corners=False)
-                            visualize_slices_2d(
-                                inputs,
-                                preds,
-                                targets,
-                                job_config.model.num_classes,
-                                train_state.step
-                            )
-                        else:
-                            preds = torch.nn.functional.interpolate(input=preds, size=targets.shape[-3:], mode="trilinear", align_corners=False)
-                            visualize_slices_3d(
-                                inputs,
-                                preds,
-                                targets,
-                                job_config.model.num_classes,
-                                train_state.step,
-                            )
+            #         # visualize some examples
+            #         if torch.distributed.get_rank() == 0:
+            #             logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
+                        
+            #             if len(job_config.model.crop_size) == 2:
+            #                 # Use the detached tensor
+            #                 val_preds = torch.nn.functional.interpolate(
+            #                     input=val_preds, 
+            #                     size=val_targets.shape[-2:], 
+            #                     mode="bilinear", 
+            #                     align_corners=False
+            #                 )
+            #                 visualize_slices_2d(
+            #                     val_inputs,
+            #                     val_preds,
+            #                     val_targets,
+            #                     job_config.model.num_classes,
+            #                     train_state.step
+            #                 )
+            #             else:
+            #                 # Use the detached tensor
+            #                 val_preds = torch.nn.functional.interpolate(
+            #                     input=val_preds, 
+            #                     size=val_targets.shape[-3:], 
+            #                     mode="trilinear", 
+            #                     align_corners=False
+            #                 )
+            #                 visualize_slices_3d(
+            #                     val_inputs,
+            #                     val_preds,
+            #                     val_targets,
+            #                     job_config.model.num_classes,
+            #                     train_state.step,
+            #                 )
+                            
+            #             # Delete preds_vis var to free memory immediately
+            #             del val_preds
 
-                model.train()
-            # ###### end visualize
+            #     model.train()
+            # # ###### end visualize
 
             # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):

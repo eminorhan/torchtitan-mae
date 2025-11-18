@@ -14,7 +14,7 @@ import torch.nn as nn
 from torch.distributed import DeviceMesh
 from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
 from torch.distributed._composable.replicate import replicate
-from torch.distributed._tensor import Replicate, Shard
+from torch.distributed._tensor import Replicate, Shard, distribute_tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper as ptd_checkpoint_wrapper
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
@@ -90,7 +90,7 @@ def parallelize_dino(
                 enable_compiled_autograd=job_config.experimental.enable_compiled_autograd,
             )
 
-# TODO: check TP implementation. Also NOTE: the plan here is specific to the DINO + linear head architecture 
+
 def apply_tp(
     model: nn.Module,
     tp_mesh: DeviceMesh,
@@ -98,64 +98,73 @@ def apply_tp(
     enable_float8: bool,
     enable_async_tp: bool,
 ):
-    """Apply tensor parallelism to the FeatureDecoder ViT model."""
-    # 1. Parallelize the patch embedding and shard its outputs
-    # 2. Parallelize the root norm layer of the transformer over the sequence dim
-    # 3. Parallelize the final linear output layer (1x1 Conv)
-    # NOTE: FQN paths are used here for clarity and precision.
-    root_plan = {
-        # The Conv2d patch embedding is like the token embedding.
-        # Its weights are replicated, but its output is sharded along the channel dimension.
-        # This is analogous to sharding the embedding dimension in an LLM.
-        "segmentation_model.0.feature_model.patch_embed.proj": RowwiseParallel(
-            input_layouts=Replicate(),
-            output_layouts=Shard(1), # Shard the feature/channel dimension
-        ),
-        # Final norm of the transformer backbone
-        "segmentation_model.0.feature_model.norm": SequenceParallel(),
-        # The final 1x1 Conv head is equivalent to a linear layer.
-        # It takes replicated input and shards its weights column-wise.
-        "segmentation_model.1.conv": ColwiseParallel(
-            input_layouts=Replicate(),
-            output_layouts=Shard(-1) if loss_parallel else Replicate(),
-            use_local_output=not loss_parallel,
-        ),
-    }
-    parallelize_module(model, tp_mesh, root_plan)
+    """
+    Apply tensor parallelism (sharding the hidden/channel dimension) to the FeatureDecoder ViT model.
+    """
+    # 1. Manually parallelize the Conv3d patch embedding
+    # We shard the weight/bias on the out_channels dim (dim 0)
+    try:
+        conv_layer = model.segmentation_model[0].feature_model.patch_embed.proj
+        
+        weight_sharding = [Shard(0)]
+        bias_sharding = [Shard(0)]
 
-    # Parallel styles used for transformer block linear weights and their inputs may be different for float8 linears
+        conv_layer.weight = nn.Parameter(
+            distribute_tensor(conv_layer.weight, tp_mesh, weight_sharding)
+        )
+        if conv_layer.bias is not None:
+            conv_layer.bias = nn.Parameter(
+                distribute_tensor(conv_layer.bias, tp_mesh, bias_sharding)
+            )
+        # The output of this layer is now sharded on the channel dim (B, C/TP, D, H, W)
+        # which becomes (B, S, C/TP) after flattening.
+    except AttributeError as e:
+        logger.error(f"Failed to parallelize patch_embed.proj: {e}")
+        raise
+
+    # 2. Parallelize the transformer blocks
     if enable_float8:
-        # TODO(vkuzo): once float8 configuration supports delayed scaling,
-        # add a check here to enforce supported float8 all-gather configurations
-        # TODO(vkuzo): add the items below to __init__.py of torchao.float8 and import from there
-        from torchao.float8.float8_tensor_parallel import Float8ColwiseParallel, Float8RowwiseParallel, PrepareFloat8ModuleInput
-
-        rowwise_parallel, colwise_parallel, prepare_module_input = Float8RowwiseParallel, Float8ColwiseParallel, PrepareFloat8ModuleInput
+        from torchao.float8.float8_tensor_parallel import (
+            Float8ColwiseParallel,
+            Float8RowwiseParallel,
+            PrepareFloat8ModuleInput,
+        )
+        rowwise_parallel, colwise_parallel, prepare_module_input = (
+            Float8RowwiseParallel,
+            Float8ColwiseParallel,
+            PrepareFloat8ModuleInput,
+        )
     else:
-        rowwise_parallel, colwise_parallel, prepare_module_input = RowwiseParallel, ColwiseParallel, PrepareModuleInput
+        rowwise_parallel, colwise_parallel, prepare_module_input = (
+            RowwiseParallel,
+            ColwiseParallel,
+            PrepareModuleInput,
+        )
 
-    # Apply tensor + sequence parallelism to every transformer block
-    # Loop through the `ModuleList` of SelfAttentionBlocks
+    # Our data layout is (B, S, C). We shard on dim 2.
+    HIDDEN_DIM_SHARD = 2
+
     for transformer_block in model.segmentation_model[0].feature_model.blocks:
+        # This plan implements standard Megatron-style TP
         layer_plan = {
-            # First LayerNorm in the block
-            "norm1": SequenceParallel(),
-            # The QKV projection is a single linear layer
-            "attn.qkv": colwise_parallel(),
-            # The output projection
-            "attn.proj": rowwise_parallel(output_layouts=Shard(1)),
-            # Second LayerNorm in the block
-            "norm2": SequenceParallel(),
-            # Prepare the MLP input by all-gathering the sharded input from the residual connection
-            "mlp": prepare_module_input(
-                input_layouts=(Shard(1),),
-                desired_input_layouts=(Replicate(),),
+            "norm1": prepare_module_input(
+                input_layouts=([Shard(HIDDEN_DIM_SHARD)],),
+                desired_input_layouts=([Replicate()],),
             ),
-            # In SwiGLUFFN, w1 and w2 are parallel up-projections
-            "mlp.w1": colwise_parallel(),
-            "mlp.w2": colwise_parallel(),
-            # w3 is the down-projection
-            "mlp.w3": rowwise_parallel(output_layouts=Shard(1)),
+            "attn.qkv": colwise_parallel(), # Out: [Shard(2)]
+            "attn.proj": rowwise_parallel(
+                output_layouts=[Shard(HIDDEN_DIM_SHARD)] # Out: [Shard(2)]
+            ),
+            
+            "norm2": prepare_module_input(
+                input_layouts=([Shard(HIDDEN_DIM_SHARD)],),
+                desired_input_layouts=([Replicate()],),
+            ),
+            "mlp.w1": colwise_parallel(), # Out: [Shard(2)]
+            "mlp.w2": colwise_parallel(), # Out: [Shard(2)]
+            "mlp.w3": rowwise_parallel(
+                output_layouts=[Shard(HIDDEN_DIM_SHARD)] # Out: [Shard(2)]
+            ),
         }
 
         parallelize_module(
@@ -164,13 +173,134 @@ def apply_tp(
             parallelize_plan=layer_plan,
         )
 
+    # 3. Parallelize the final LayerNorm
+    # Input is Shard(2) from blocks, output needs to be Replicate for the final Conv3d
+    final_norm_plan = {
+        "": prepare_module_input(
+            input_layouts=([Shard(HIDDEN_DIM_SHARD)],),
+            desired_input_layouts=([Replicate()],),
+        )
+    }
+    parallelize_module(model.segmentation_model[0].feature_model.norm, tp_mesh, final_norm_plan)
+
+    # 4. Manually parallelize the final Conv3d
+    # Input is now Replicated from the final norm.
+    # We shard the weight/bias on the out_channels dim (dim 0).
+    try:
+        final_conv = model.segmentation_model[1].conv
+        
+        weight_sharding = [Shard(0)]
+        bias_sharding = [Shard(0)]
+
+        final_conv.weight = nn.Parameter(
+            distribute_tensor(final_conv.weight, tp_mesh, weight_sharding)
+        )
+        if final_conv.bias is not None:
+            final_conv.bias = nn.Parameter(
+                distribute_tensor(final_conv.bias, tp_mesh, bias_sharding)
+            )
+        
+        # This manual sharding results in a channel-sharded output (Shard(1)).
+        # This is equivalent to `loss_parallel=True`.
+        if not loss_parallel:
+            logger.warning(
+                "`loss_parallel=False` is not supported for the final manually "
+                "sharded Conv3d. The output will remain sharded."
+            )
+            
+    except AttributeError as e:
+        logger.error(f"Failed to parallelize segmentation_model.1.conv: {e}")
+        raise
+
     if enable_async_tp:
         from torch.distributed._symmetric_memory import enable_symm_mem_for_group
 
         torch._inductor.config._micro_pipeline_tp = True
         enable_symm_mem_for_group(tp_mesh.get_group().group_name)
 
-    logger.info(f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''} Tensor Parallelism to the model")
+    logger.info(f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''} Channel-Sharding Tensor Parallelism to the model")
+
+# TODO: check TP implementation. Also NOTE: the plan here is specific to the DINO + linear head architecture 
+# def apply_tp(
+#     model: nn.Module,
+#     tp_mesh: DeviceMesh,
+#     loss_parallel: bool,
+#     enable_float8: bool,
+#     enable_async_tp: bool,
+# ):
+#     """Apply tensor parallelism to the FeatureDecoder ViT model."""
+#     # 1. Parallelize the patch embedding and shard its outputs
+#     # 2. Parallelize the root norm layer of the transformer over the sequence dim
+#     # 3. Parallelize the final linear output layer (1x1 Conv)
+#     # NOTE: FQN paths are used here for clarity and precision.
+#     root_plan = {
+#         # The Conv2d patch embedding is like the token embedding.
+#         # Its weights are replicated, but its output is sharded along the channel dimension.
+#         # This is analogous to sharding the embedding dimension in an LLM.
+#         "segmentation_model.0.feature_model.patch_embed.proj": RowwiseParallel(
+#             input_layouts=Replicate(),
+#             output_layouts=Shard(1), # Shard the feature/channel dimension
+#         ),
+#         # Final norm of the transformer backbone
+#         "segmentation_model.0.feature_model.norm": SequenceParallel(),
+#         # The final 1x1 Conv head is equivalent to a linear layer.
+#         # It takes replicated input and shards its weights column-wise.
+#         "segmentation_model.1.conv": ColwiseParallel(
+#             input_layouts=Replicate(),
+#             output_layouts=Shard(-1) if loss_parallel else Replicate(),
+#             use_local_output=not loss_parallel,
+#         ),
+#     }
+#     parallelize_module(model, tp_mesh, root_plan)
+
+#     # Parallel styles used for transformer block linear weights and their inputs may be different for float8 linears
+#     if enable_float8:
+#         # TODO(vkuzo): once float8 configuration supports delayed scaling,
+#         # add a check here to enforce supported float8 all-gather configurations
+#         # TODO(vkuzo): add the items below to __init__.py of torchao.float8 and import from there
+#         from torchao.float8.float8_tensor_parallel import Float8ColwiseParallel, Float8RowwiseParallel, PrepareFloat8ModuleInput
+
+#         rowwise_parallel, colwise_parallel, prepare_module_input = Float8RowwiseParallel, Float8ColwiseParallel, PrepareFloat8ModuleInput
+#     else:
+#         rowwise_parallel, colwise_parallel, prepare_module_input = RowwiseParallel, ColwiseParallel, PrepareModuleInput
+
+#     # Apply tensor + sequence parallelism to every transformer block
+#     # Loop through the `ModuleList` of SelfAttentionBlocks
+#     for transformer_block in model.segmentation_model[0].feature_model.blocks:
+#         layer_plan = {
+#             # First LayerNorm in the block
+#             "norm1": SequenceParallel(),
+#             # The QKV projection is a single linear layer
+#             "attn.qkv": colwise_parallel(),
+#             # The output projection
+#             "attn.proj": rowwise_parallel(output_layouts=Shard(1)),
+#             # Second LayerNorm in the block
+#             "norm2": SequenceParallel(),
+#             # Prepare the MLP input by all-gathering the sharded input from the residual connection
+#             "mlp": prepare_module_input(
+#                 input_layouts=(Shard(1),),
+#                 desired_input_layouts=(Replicate(),),
+#             ),
+#             # In SwiGLUFFN, w1 and w2 are parallel up-projections
+#             "mlp.w1": colwise_parallel(),
+#             "mlp.w2": colwise_parallel(),
+#             # w3 is the down-projection
+#             "mlp.w3": rowwise_parallel(output_layouts=Shard(1)),
+#         }
+
+#         parallelize_module(
+#             module=transformer_block,
+#             device_mesh=tp_mesh,
+#             parallelize_plan=layer_plan,
+#         )
+
+#     if enable_async_tp:
+#         from torch.distributed._symmetric_memory import enable_symm_mem_for_group
+
+#         torch._inductor.config._micro_pipeline_tp = True
+#         enable_symm_mem_for_group(tp_mesh.get_group().group_name)
+
+#     logger.info(f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''} Tensor Parallelism to the model")
 
 
 # for selective op activation checkpointing
