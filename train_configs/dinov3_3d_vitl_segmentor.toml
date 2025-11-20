@@ -18,9 +18,9 @@ save_tb_folder = "tb"
 backbone = "dinov3_vitl16_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16"] + 3D versions
 head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
-backbone_pretrained = true
 num_classes = 64 
 crop_size = [432, 432, 432]
+use_fa3 = false  # FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
 
 [data]
 dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
