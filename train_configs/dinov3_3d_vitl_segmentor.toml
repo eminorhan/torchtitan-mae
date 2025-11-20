@@ -19,8 +19,8 @@ backbone = "dinov3_vitl16_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3
 head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
 num_classes = 64 
-crop_size = [432, 432, 432]
-use_fa3 = false  # FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
+crop_size = [448, 448, 448]
+use_fa3 = false  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
 
 [data]
 dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"

@@ -32,7 +32,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
     and their corresponding labeled segmentation crops. It returns fixed-size
     crops suitable for training deep learning models.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0'):
+    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the dataset by scanning for valid data samples.
 
@@ -44,6 +44,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
             val_split (float, optional): Fraction of data to use for validation. Defaults to 0.01.
             raw_scale (str, optional): Resolution for raw data. Defaults to 's0' (highest resolution).
             labels_scale (str, optional): Resolution for labels. Defaults to 's0' (highest resolution).
+            augment (bool): If True, applies random 3D rotations and flips to training samples.        
         """
         super().__init__()        
         self.root_dir = root_dir
@@ -51,6 +52,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
         self.rank = rank
         self.raw_scale = raw_scale
         self.labels_scale = labels_scale
+        self.augment = augment
 
         # set rng for this rank (base_seed will change from run to run)
         self.rng = np.random.default_rng(base_seed + self.rank)
@@ -168,6 +170,44 @@ class ZarrSegmentationDataset3D(IterableDataset):
             highest_res_scale = min(available_scales, key=lambda s: sum(s['scale']))
             return highest_res_scale['path'], highest_res_scale['scale'], highest_res_scale['translation']
 
+    def _augment_data(self, raw: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Applies random axis-aligned rotations and reflections (flips). Fast execution using numpy strides (no interpolation).
+        """
+        # 1. Random Flips (Mirror Symmetries)
+        # We check each axis (0,1,2) and flip it with 50% probability
+        for axis in range(3):
+            if self.rng.random() < 0.5:
+                raw = np.flip(raw, axis=axis)
+                label = np.flip(label, axis=axis)
+
+        # 2. Random 90-degree Rotations
+        # We pick a random number of 90-deg rotations (0, 1, 2, 3)
+        k = self.rng.integers(0, 4)
+        
+        if k > 0:
+            # We need to pick a plane (two axes) to rotate. 
+            # Options: (0,1) [Z-Y], (0,2) [Z-X], (1,2) [Y-X]
+            
+            # DATA SAFETY: We can only rotate axes that have the same dimension size.
+            # If crop is (32, 256, 256), we can rotate Y and X, but we cannot swap Z with X.
+            valid_planes = []
+            shape = raw.shape
+            
+            if shape[0] == shape[1]: valid_planes.append((0, 1))
+            if shape[0] == shape[2]: valid_planes.append((0, 2))
+            if shape[1] == shape[2]: valid_planes.append((1, 2))
+            
+            if valid_planes:
+                # Choose a random valid plane to rotate
+                axes = self.rng.choice(valid_planes)
+                # rot90 is very efficient (uses transposes/flips internally)
+                raw = np.rot90(raw, k=k, axes=axes)
+                label = np.rot90(label, k=k, axes=axes)
+
+        # PyTorch sometimes throws warnings/errors with negative strides (caused by flip), .copy() ensures the array is contiguous in memory.
+        return raw.copy(), label.copy()
+
     def _get_sample(self, sample_info):
         """
         Fetches a single raw crop and its corresponding segmentation mask, both at a fixed output size.
@@ -262,7 +302,10 @@ class ZarrSegmentationDataset3D(IterableDataset):
         slicing_for_copy = tuple(slice(0, min(fs, cs)) for fs, cs in zip(target_shape, raw_crop_from_zarr.shape))
         final_raw_crop[slicing_for_copy] = raw_crop_from_zarr[slicing_for_copy]
 
-        # Add channel axis (TODO: need to add input/label transformations here)
+        if self.augment:
+            final_raw_crop, final_label_mask = self._augment_data(final_raw_crop, final_label_mask)
+
+        # Add channel axis and convert to tensor
         raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...]).float() / 255.0
         label_tensor = torch.from_numpy(final_label_mask).long()
 
@@ -277,9 +320,13 @@ class ZarrSegmentationDataset3D(IterableDataset):
     # Separate iterator for the validation set
     def validation_iterator(self):
         """The validation iterator. Yields each validation sample exactly once."""
+        prev_augment = self.augment
+        self.augment = False
+
         for sample_info in self.val_samples:
             yield self._get_sample(sample_info)
 
+        self.augment = prev_augment
 
 class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
     """
