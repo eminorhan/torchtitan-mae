@@ -20,7 +20,7 @@ head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
 backbone_pretrained = true
 num_classes = 64 
-crop_size = [480, 480, 480]
+crop_size = [432, 432, 432]
 
 [data]
 dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
@@ -31,13 +31,14 @@ lr = 3e-4
 
 [training]
 batch_size = 1
-warmup_steps = 900  # lr scheduler warm up
+warmup_steps = 100  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
-steps = 90000  # number of training steps
+steps = 10000  # number of training steps
 data_parallel_replicate_degree = 1
 data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
 compile = false
+mixed_precision_param = "float32"  # bf16 mixed precision training is unstable in 3D
 
 [experimental]
 pipeline_parallel_degree = 1

@@ -339,6 +339,7 @@ def main(job_config: JobConfig):
             # resample predictions if necessary
             if preds.shape[-3:] != labels.shape[-3:]:
                 preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)
+                # preds = preds.clamp(min=-100., max=100.)
             return torch.nn.functional.cross_entropy(preds, labels)
 
     # train loop
