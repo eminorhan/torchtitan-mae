@@ -24,6 +24,7 @@ use_fa3 = false  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precisio
 
 [data]
 dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+augment = false  # whether to use "cheap" data augmentations
 
 [optimizer]
 name = "AdamW"

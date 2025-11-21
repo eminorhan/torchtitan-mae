@@ -332,7 +332,7 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
     It inherits seeding and iteration logic from its 3D parent class.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0'):
+    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the 2D dataloader.
 
@@ -347,8 +347,39 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
         """
         # Call the parent constructor, but we will use our own 2D crop_size.
         # The parent's crop_size will be ignored since we override _get_single_item.
-        super().__init__(root_dir, None, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0')
+        super().__init__(root_dir, None, rank, base_seed, val_split, raw_scale, labels_scale, augment)
         self.crop_size = crop_size # This is a 2D tuple (H, W)
+
+    def _augment_data(self, raw: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Applies random 2D axis-aligned rotations and flips.
+        """
+        # 1. Random Flips (Independent probabilities for H and V)
+        # Flipping axis 0 is Vertical flip
+        if self.rng.random() < 0.5:
+            raw = np.flip(raw, axis=0)
+            label = np.flip(label, axis=0)
+            
+        # Flipping axis 1 is Horizontal flip
+        if self.rng.random() < 0.5:
+            raw = np.flip(raw, axis=1)
+            label = np.flip(label, axis=1)
+
+        # 2. Random 90-degree Rotations
+        # CRITICAL CHECK: We can only do 90/270 rotations if the image is Square.
+        # If H != W, 90-degree rotation changes shape and breaks the DataLoader batching.
+        if raw.shape[0] == raw.shape[1]:
+            k = self.rng.integers(0, 4) # 0, 1, 2, 3
+        else:
+            # If rectangular, we can only rotate 180 degrees (k=2) or 0 (k=0)
+            k = self.rng.choice([0, 2])
+
+        if k > 0:
+            # np.rot90 defaults to axes (0, 1) which is perfect for 2D
+            raw = np.rot90(raw, k=k)
+            label = np.rot90(label, k=k)
+
+        return raw.copy(), label.copy()
 
     def _get_sample(self, sample_info):
         """
@@ -438,6 +469,9 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
         else:
             final_raw_slice = raw_slice_2d
 
+        if self.augment:
+            final_raw_slice, final_label_slice = self._augment_data(final_raw_slice, final_label_slice)
+
         # Add channel axis (TODO: need to add input/label transformations here)
         raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
         label_tensor = torch.from_numpy(final_label_slice).long()
@@ -450,7 +484,8 @@ def build_data_loader(
     root_dir: str,
     crop_size: tuple[int, int] | tuple[int, int, int], 
     rank: int = 0,
-    base_seed: int = 0
+    base_seed: int = 0,
+    augment: bool = False
 ) -> DataLoader:
     """
     Builds a 2D or 3D data loader for EM data.
@@ -469,13 +504,15 @@ def build_data_loader(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,
-            base_seed=base_seed
+            base_seed=base_seed,
+            augment=augment
         )
     else:
         dataset = ZarrSegmentationDataset2D(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,
-            base_seed=base_seed
+            base_seed=base_seed,
+            augment=augment
         )
     return DataLoader(dataset, batch_size=batch_size, num_workers=0)

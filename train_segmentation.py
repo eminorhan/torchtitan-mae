@@ -256,7 +256,8 @@ def main(job_config: JobConfig):
         job_config.data.dataset_folder,
         tuple(job_config.model.crop_size),
         dp_rank,
-        job_config.data.base_seed
+        job_config.data.base_seed,
+        job_config.data.augment
     )
 
     # build model skeleton (TODO: maybe try 'meta' init here). NOTE: we load the pretrained weights during ckpt.load() below

@@ -90,6 +90,7 @@ class JobConfig:
         # data configs
         self.parser.add_argument("--data.dataset_folder", type=str, default="/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data", help="Root directory for the dataset")
         self.parser.add_argument("--data.base_seed", type=int, default=0, help="Random base seed to be used for shuffling the dataset")
+        self.parser.add_argument("--data.augment", default=False, action="store_true", help="Whether to use data augmentation (default: False).")
 
         # optimizer configs
         self.parser.add_argument("--optimizer.name", type=str, default="AdamW", help="Optimizer to use")
