@@ -3,7 +3,7 @@ import zarr
 import numpy as np
 import scipy.ndimage
 
-from typing import List
+from typing import List, Tuple
 from glob import glob
 
 import torch
@@ -189,8 +189,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
             # We need to pick a plane (two axes) to rotate. 
             # Options: (0,1) [Z-Y], (0,2) [Z-X], (1,2) [Y-X]
             
-            # DATA SAFETY: We can only rotate axes that have the same dimension size.
-            # If crop is (32, 256, 256), we can rotate Y and X, but we cannot swap Z with X.
+            # NOTE: We can only rotate axes that have the same dimension size.
             valid_planes = []
             shape = raw.shape
             
