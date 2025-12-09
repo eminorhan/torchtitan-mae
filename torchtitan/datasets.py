@@ -355,19 +355,16 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
         Applies random 2D axis-aligned rotations and flips.
         """
         # 1. Random Flips (Independent probabilities for H and V)
-        # Flipping axis 0 is Vertical flip
         if self.rng.random() < 0.5:
             raw = np.flip(raw, axis=0)
             label = np.flip(label, axis=0)
             
-        # Flipping axis 1 is Horizontal flip
         if self.rng.random() < 0.5:
             raw = np.flip(raw, axis=1)
             label = np.flip(label, axis=1)
 
         # 2. Random 90-degree Rotations
-        # CRITICAL CHECK: We can only do 90/270 rotations if the image is Square.
-        # If H != W, 90-degree rotation changes shape and breaks the DataLoader batching.
+        # NOTE: We can only do 90/270 rotations if the image is Square.
         if raw.shape[0] == raw.shape[1]:
             k = self.rng.integers(0, 4) # 0, 1, 2, 3
         else:
