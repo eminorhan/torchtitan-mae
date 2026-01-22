@@ -47,6 +47,21 @@ def print_parameter_status(model):
     logger.info("-" * 30)
     logger.info("\n")
 
+def compute_pixel_accuracy(logits, targets):
+    """
+    Computes the percentage of correctly classified pixels.
+    Args:
+        logits: Model output tensor (B, C, H, W) or (B, C, D, H, W)
+        targets: Ground truth tensor (B, H, W) or (B, D, H, W)
+    """
+    # Convert logits to class predictions
+    preds = torch.argmax(logits, dim=1)
+    
+    # Count correct pixels
+    correct = (preds == targets).sum().item()
+    total = targets.numel()
+    
+    return correct / total
 
 def visualize_slices_3d(
         inputs: torch.Tensor,
@@ -396,64 +411,79 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # # ###### visualize (NOTE: this is for debug purposes, will be removed later)
-            # if train_state.step % job_config.metrics.log_freq == 0:
-            #     model.eval()
-            #     total_val_loss = 0
-            #     num_val_samples = 0
-            #     with torch.no_grad():
-            #         # TODO: a bit hacky, ideally we should have separate train/val loaders
-            #         for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
-            #             val_inputs = val_inputs.unsqueeze(0).cuda()
-            #             val_targets = val_targets.unsqueeze(0).cuda()
-            #             val_preds = model(val_inputs) 
-            #             val_loss = loss_fn(val_preds, val_targets)
-            #             total_val_loss += val_loss.item()
-            #             num_val_samples += 1
+            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
+            if train_state.step % job_config.metrics.log_freq == 0:
+                model.eval()
+                
+                total_pixel_acc = 0
+                total_val_loss = 0
+                num_val_samples = 0
+                
+                with torch.no_grad():
+                    # TODO: a bit hacky, ideally we should have separate train/val loaders
+                    for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
+                        val_inputs = val_inputs.unsqueeze(0).cuda()
+                        val_targets = val_targets.unsqueeze(0).cuda()
+                        val_preds = model(val_inputs)
+
+                        # 1. Pixel Accuracy
+                        acc = compute_pixel_accuracy(val_preds, val_targets)
+                        total_pixel_acc += acc
+
+                        # 2. Val loss
+                        val_loss = loss_fn(val_preds, val_targets)
+                        total_val_loss += val_loss.item()
+
+                        num_val_samples += 1
         
-            #         avg_val_loss = total_val_loss / num_val_samples
-            #         avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
+                    avg_val_loss = total_val_loss / num_val_samples
+                    avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
 
-            #         # visualize some examples
-            #         if torch.distributed.get_rank() == 0:
-            #             logger.info(f"--- Validation at step {train_state.step}: Average validation loss = {avg_val_loss} ---")
-                        
-            #             if len(job_config.model.crop_size) == 2:
-            #                 # Use the detached tensor
-            #                 val_preds = torch.nn.functional.interpolate(
-            #                     input=val_preds, 
-            #                     size=val_targets.shape[-2:], 
-            #                     mode="bilinear", 
-            #                     align_corners=False
-            #                 )
-            #                 visualize_slices_2d(
-            #                     val_inputs,
-            #                     val_preds,
-            #                     val_targets,
-            #                     job_config.model.num_classes,
-            #                     train_state.step
-            #                 )
-            #             else:
-            #                 # Use the detached tensor
-            #                 val_preds = torch.nn.functional.interpolate(
-            #                     input=val_preds, 
-            #                     size=val_targets.shape[-3:], 
-            #                     mode="trilinear", 
-            #                     align_corners=False
-            #                 )
-            #                 visualize_slices_3d(
-            #                     val_inputs,
-            #                     val_preds,
-            #                     val_targets,
-            #                     job_config.model.num_classes,
-            #                     train_state.step,
-            #                 )
+                    avg_pixel_acc = total_pixel_acc / num_val_samples
+                    avg_pixel_acc = utils.dist_mean(avg_pixel_acc, dp_mesh) 
+
+                    # visualize some examples
+                    if torch.distributed.get_rank() == 0:
+                        logger.info(f"--- Validation at step {train_state.step} ---")
+                        logger.info(f"Average validation loss = {avg_val_loss}")
+                        logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
+
+                        if len(job_config.model.crop_size) == 2:
+                            # Use the detached tensor
+                            val_preds = torch.nn.functional.interpolate(
+                                input=val_preds, 
+                                size=val_targets.shape[-2:], 
+                                mode="bilinear", 
+                                align_corners=False
+                            )
+                            visualize_slices_2d(
+                                val_inputs,
+                                val_preds,
+                                val_targets,
+                                job_config.model.num_classes,
+                                train_state.step
+                            )
+                        else:
+                            # Use the detached tensor
+                            val_preds = torch.nn.functional.interpolate(
+                                input=val_preds, 
+                                size=val_targets.shape[-3:], 
+                                mode="trilinear", 
+                                align_corners=False
+                            )
+                            visualize_slices_3d(
+                                val_inputs,
+                                val_preds,
+                                val_targets,
+                                job_config.model.num_classes,
+                                train_state.step,
+                            )
                             
-            #             # Delete preds_vis var to free memory immediately
-            #             del val_preds
+                        # Delete preds_vis var to free memory immediately
+                        del val_preds
 
-            #     model.train()
-            # # ###### end visualize
+                model.train()
+            # ###### end visualize
 
             # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):

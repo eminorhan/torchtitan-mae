@@ -32,7 +32,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
     and their corresponding labeled segmentation crops. It returns fixed-size
     crops suitable for training deep learning models.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.01, raw_scale='s0', labels_scale='s0', augment=True):
+    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the dataset by scanning for valid data samples.
 
@@ -211,7 +211,6 @@ class ZarrSegmentationDataset3D(IterableDataset):
         """
         Fetches a single raw crop and its corresponding segmentation mask, both at a fixed output size.
         """
-       
         zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
         label_array = zarr_root[sample_info['label_path']]
 
