@@ -311,7 +311,7 @@ def main(job_config: JobConfig):
     )
 
     # build model skeleton (TODO: maybe try 'meta' init here). NOTE: we load the pretrained weights during ckpt.load() below
-    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", in_chans=1, use_fa3=job_config.model.use_fa3, pretrained=False)
+    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", use_fa3=job_config.model.use_fa3, pretrained=False)
     model = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
     if torch.distributed.get_rank() == 0:
@@ -378,20 +378,20 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
-    # cross-entropy loss for 2D or 3D data
-    if len(job_config.model.crop_size) == 2:
-        def loss_fn(preds, labels):
-            # resample predictions if necessary
+    # cross-entropy loss (same for 2D or 3D data)
+    def loss_fn(preds, labels):
+        return torch.nn.functional.cross_entropy(preds, labels)
+
+    # resampling function
+    def resample_preds(preds, labels, crop_size):
+        # 2D resampling
+        if len(crop_size) == 2:
             if preds.shape[-2:] != labels.shape[-2:]:
                 preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-2:], mode="bilinear", align_corners=False)
-            return torch.nn.functional.cross_entropy(preds, labels)
-    else:
-        def loss_fn(preds, labels):
-            # resample predictions if necessary
+        else:  # 3D resampling
             if preds.shape[-3:] != labels.shape[-3:]:
                 preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)
-                # preds = preds.clamp(min=-100., max=100.)
-            return torch.nn.functional.cross_entropy(preds, labels)
+        return preds
 
     # train loop
     logger.info(
@@ -423,6 +423,10 @@ def main(job_config: JobConfig):
             # run forward / backward
             with train_context():
                 preds = model(inputs)
+                # resample predictions if necessary
+                preds = resample_preds(preds, targets, job_config.model.crop_size)
+
+                # logger.info(f"inputs/targets/outputs shape: {inputs.shape}/{targets.shape}/{preds.shape}")
                 loss = loss_fn(preds, targets)
                 # need to free before bwd to avoid peaking memory
                 del preds
@@ -461,6 +465,7 @@ def main(job_config: JobConfig):
                         val_inputs = val_inputs.unsqueeze(0).cuda()
                         val_targets = val_targets.unsqueeze(0).cuda()
                         val_preds = model(val_inputs)
+                        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
 
                         # 1. Pixel Accuracy
                         acc = compute_pixel_accuracy(val_preds, val_targets)

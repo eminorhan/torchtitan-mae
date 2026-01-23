@@ -27,7 +27,7 @@ DCP_ROOT = "/lustre/blizzard/stf218/scratch/emin/torchtitan-mae/outputs"
 torch.hub.set_dir(TORCH_HUB_PATH)
 
 for backbone, backbone_pth in BACKBONE_CKPT_DICT.items():
-    bbone = torch.hub.load(DINOV3_REPO_PATH, backbone, source="local", weights=f"{BACKBONE_PTH_ROOT}/{backbone_pth}", in_chans=1, pertrained=True, use_fa3=True)
+    bbone = torch.hub.load(DINOV3_REPO_PATH, backbone, source="local", weights=f"{BACKBONE_PTH_ROOT}/{backbone_pth}", pretrained=True, use_fa3=True)
     model = build_segmentation_decoder(bbone, decoder_type=DECODER_TYPE, num_classes=NUM_CLASSES)
     model_state_dict = model.state_dict()
     print(f"Loaded and built model {backbone}...")
