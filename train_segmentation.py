@@ -63,16 +63,51 @@ def compute_pixel_accuracy(logits, targets):
     
     return correct / total
 
+def compute_confusion_matrix(preds, targets, num_classes, ignore_index=None):
+    """
+    Computes the confusion matrix for mIoU calculation.
+    Args:
+        preds: (B, C, H, W) or (B, C, D, H, W) - Raw logits or softmax output
+        targets: (B, H, W) or (B, D, H, W) - Ground truth labels
+        num_classes: int
+        ignore_index: int (optional) - Label to ignore (e.g. 255 for void)
+    Returns:
+        conf_matrix: (num_classes, num_classes) tensor on the same device
+    """
+    # Get class predictions
+    preds = torch.argmax(preds, dim=1)  # Shape: (B, H, W) or (B, D, H, W)
+    
+    # Flatten inputs to 1D lists of pixels
+    preds_flat = preds.flatten()
+    targets_flat = targets.flatten()
+    
+    # Filter out 'ignore_index' if necessary
+    if ignore_index is not None:
+        mask = (targets_flat != ignore_index)
+        preds_flat = preds_flat[mask]
+        targets_flat = targets_flat[mask]
+    
+    # Compute confusion matrix using bincount
+    unique_mapping = targets_flat * num_classes + preds_flat
+    
+    # Count occurrences
+    hist = torch.bincount(unique_mapping, minlength=num_classes**2)
+    
+    # Reshape to (num_classes, num_classes)
+    conf_matrix = hist.reshape(num_classes, num_classes)
+    
+    return conf_matrix.float()
+
 def visualize_slices_3d(
-        inputs: torch.Tensor,
-        preds: torch.Tensor,
-        targets: torch.Tensor,
-        num_classes: int,
-        step: int,
-        sample_idx: int = 0,
-        overlay_alpha: float = 0.3,
-        fps: int = 10
-    ):
+    inputs: torch.Tensor,
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int,
+    step: int,
+    sample_idx: int = 0,
+    overlay_alpha: float = 0.3,
+    fps: int = 10
+):
     """
     Visualizes slices from a 3D volume as a side-by-side GIF animation of predictions and ground truth.
 
@@ -153,7 +188,7 @@ def visualize_slices_2d(
     num_classes: int,
     step: int,
     overlay_alpha: float = 0.3
-    ):
+):
     """
     Visualizes all 2D images in a batch with their predicted and ground truth masks.
 
@@ -276,7 +311,7 @@ def main(job_config: JobConfig):
     )
 
     # build model skeleton (TODO: maybe try 'meta' init here). NOTE: we load the pretrained weights during ckpt.load() below
-    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", use_fa3=job_config.model.use_fa3, pretrained=False)
+    backbone = torch.hub.load(job_config.model.dinov3_repo_folder, job_config.model.backbone, source="local", in_chans=1, use_fa3=job_config.model.use_fa3, pretrained=False)
     model = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
     if torch.distributed.get_rank() == 0:
@@ -411,14 +446,15 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # ###### visualize (NOTE: this is for debug purposes, will be removed later)
+            # ###### visualize & log results (NOTE: this is for debug purposes, will be removed later)
             if train_state.step % job_config.metrics.log_freq == 0:
                 model.eval()
                 
                 total_pixel_acc = 0
                 total_val_loss = 0
                 num_val_samples = 0
-                
+                conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on the GPU
+
                 with torch.no_grad():
                     # TODO: a bit hacky, ideally we should have separate train/val loaders
                     for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
@@ -434,6 +470,10 @@ def main(job_config: JobConfig):
                         val_loss = loss_fn(val_preds, val_targets)
                         total_val_loss += val_loss.item()
 
+                        # 3. mIoU
+                        batch_conf_matrix = compute_confusion_matrix(val_preds, val_targets, job_config.model.num_classes)
+                        conf_matrix_all += batch_conf_matrix
+
                         num_val_samples += 1
         
                     avg_val_loss = total_val_loss / num_val_samples
@@ -442,12 +482,30 @@ def main(job_config: JobConfig):
                     avg_pixel_acc = total_pixel_acc / num_val_samples
                     avg_pixel_acc = utils.dist_mean(avg_pixel_acc, dp_mesh) 
 
-                    # visualize some examples
-                    if torch.distributed.get_rank() == 0:
-                        logger.info(f"--- Validation at step {train_state.step} ---")
-                        logger.info(f"Average validation loss = {avg_val_loss}")
-                        logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
+                    # Reduce confusion matrix across ranks
+                    torch.distributed.all_reduce(conf_matrix_all, op=torch.distributed.ReduceOp.SUM)
 
+                    # Log eval results and visualize some examples
+                    if torch.distributed.get_rank() == 0:
+                        
+                        # Mean IoU calculation
+                        true_positive = torch.diag(conf_matrix_all)
+                        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+                        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+                        union = rows_sum + cols_sum - true_positive
+                        
+                        # Calculate IoU per class
+                        iou_per_class = true_positive / (union + 1e-6)
+                        
+                        # Mean IoU (ignoring classes that don't exist in targets)
+                        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+
+                        logger.info(f"--- Validation at step {train_state.step} ---")
+                        logger.info(f"Average validation loss = {avg_val_loss:.4f}")
+                        logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
+                        logger.info(f"Mean IoU = {avg_miou:.4f}")
+
+                        # Visualize results
                         if len(job_config.model.crop_size) == 2:
                             # Use the detached tensor
                             val_preds = torch.nn.functional.interpolate(
@@ -483,7 +541,7 @@ def main(job_config: JobConfig):
                         del val_preds
 
                 model.train()
-            # ###### end visualize
+            # ###### end visualize & logging
 
             # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
