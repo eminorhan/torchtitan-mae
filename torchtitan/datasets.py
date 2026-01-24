@@ -32,19 +32,9 @@ class ZarrSegmentationDataset3D(IterableDataset):
     and their corresponding labeled segmentation crops. It returns fixed-size
     crops suitable for training deep learning models.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
+    def __init__(self, root_dir, crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the dataset by scanning for valid data samples.
-
-        Args:
-            root_dir (str): The path to the root directory containing the Zarr datasets.
-            crop_size (tuple, optional): The desired (Z, Y, X) output size of the raw and label crops.
-            rank (int): Rank of this process.
-            base_seed (int): A base seed for reproducibility.
-            val_split (float, optional): Fraction of data to use for validation. Defaults to 0.01.
-            raw_scale (str, optional): Resolution for raw data. Defaults to 's0' (highest resolution).
-            labels_scale (str, optional): Resolution for labels. Defaults to 's0' (highest resolution).
-            augment (bool): If True, applies random 3D rotations and flips to training samples.        
         """
         super().__init__()        
         self.root_dir = root_dir
@@ -54,19 +44,31 @@ class ZarrSegmentationDataset3D(IterableDataset):
         self.labels_scale = labels_scale
         self.augment = augment
 
-        # set rng for this rank (base_seed will change from run to run)
-        self.rng = np.random.default_rng(base_seed + self.rank)
-
-        # find and split the samples
+        # Find samples
         all_samples = self._find_samples()
 
-        # split the data into training and validation sets
+        # Sort deterministically: ensure every rank starts with the exact same list order.
+        # We sort by the unique paths in the sample dictionary.
+        all_samples.sort(key=lambda x: x['zarr_path'] + x['label_path'])
+
+        # Shuffle using a shared seed
+        split_rng = np.random.default_rng(1)
+        split_rng.shuffle(all_samples)
+
+        # Split the data
         split_idx = int(len(all_samples) * (1 - val_split))
         self.train_samples = all_samples[:split_idx]
         self.val_samples = all_samples[split_idx:]
 
-        print(f"Dataset initialized: {len(self.train_samples)} training samples, {len(self.val_samples)} validation samples.")
-    
+        # Rank-specific RNG: this is used for per-rank data loading & augmentation during training.
+        self.rng = np.random.default_rng()
+
+        print(f"[Rank {self.rank}]: {len(self.train_samples)} training samples, {len(self.val_samples)} validation samples.")
+        # for i, sample in enumerate(self.train_samples):
+        #     print(f"[Rank {self.rank}]: Train sample {i}: {sample['zarr_path']+sample['label_path']}")
+        # for i, sample in enumerate(self.val_samples):
+        #     print(f"[Rank {self.rank}]: Val sample {i}: {sample['zarr_path']+sample['label_path']}")
+
     def _find_samples(self):
         """
         Scans the root directory to find all (raw_volume_group, label_crop) pairs.
@@ -331,7 +333,7 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
     It inherits seeding and iteration logic from its 3D parent class.
     """
-    def __init__(self, root_dir, crop_size, rank, base_seed, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
+    def __init__(self, root_dir, crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the 2D dataloader.
 
@@ -339,14 +341,13 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
             root_dir (str): Path to the root directory containing Zarr datasets.
             crop_size (tuple): Desired (H, W) output size for 2D slices.
             rank (int): The distributed rank of the current process.
-            base_seed (int): A base seed for reproducibility.
             val_split (float, optional): Fraction of data to use for validation. Defaults to 0.05.
             raw_scale (str, optional): Default highest-resolution scale for raw data.
             labels_scale (str, optional): Scale level for labels.
         """
         # Call the parent constructor, but we will use our own 2D crop_size.
         # The parent's crop_size will be ignored since we override _get_single_item.
-        super().__init__(root_dir, None, rank, base_seed, val_split, raw_scale, labels_scale, augment)
+        super().__init__(root_dir, None, rank, val_split, raw_scale, labels_scale, augment)
         self.crop_size = crop_size # This is a 2D tuple (H, W)
 
     def _augment_data(self, raw: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -480,7 +481,6 @@ def build_data_loader(
     root_dir: str,
     crop_size: tuple[int, int] | tuple[int, int, int], 
     rank: int = 0,
-    base_seed: int = 0,
     augment: bool = False
 ) -> DataLoader:
     """
@@ -500,7 +500,6 @@ def build_data_loader(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,
-            base_seed=base_seed,
             augment=augment
         )
     else:
@@ -508,7 +507,6 @@ def build_data_loader(
             root_dir=root_dir, 
             crop_size=crop_size,
             rank=rank,
-            base_seed=base_seed,
             augment=augment
         )
     return DataLoader(dataset, batch_size=batch_size, num_workers=0)
