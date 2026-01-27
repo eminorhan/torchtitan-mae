@@ -328,6 +328,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
 
         self.augment = prev_augment
 
+
 class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
     """
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
@@ -474,6 +475,120 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
         label_tensor = torch.from_numpy(final_label_slice).long()
         
         return transform_2d(raw_tensor.expand(3, -1, -1)), label_tensor
+
+    def validation_iterator(self):
+        """
+        Yields the entire volume for each validation sample, sliced along Z 
+        and stacked into a batch.
+        Output Shape: (D, 3, H, W) for Raw, (D, H, W) for Labels.
+        """
+        prev_augment = self.augment
+        self.augment = False # Disable augmentation for validation
+
+        for sample_info in self.val_samples:
+            zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
+            
+            # 1. Load the full 3D label volume
+            label_array_3d = zarr_root[sample_info['label_path']]
+            full_label_vol = label_array_3d[:] # Load into memory
+            
+            # Parse Metadata
+            label_attrs_group_path = os.path.dirname(sample_info['label_path'])
+            label_attrs = zarr_root[label_attrs_group_path].attrs.asdict()
+            label_scale_name = os.path.basename(sample_info['label_path'])
+            label_scale, label_translation = self._parse_ome_ngff_metadata(label_attrs, label_scale_name)
+            
+            if label_scale is None:
+                # Fallback defaults if metadata missing
+                label_scale = [1.0, 1.0, 1.0]
+                label_translation = [0.0, 0.0, 0.0]
+
+            # 2. Determine target shape
+            # We preserve the Depth (Z), but force H and W to crop_size
+            d_dim = full_label_vol.shape[0]
+            target_shape_3d = (d_dim, self.crop_size[0], self.crop_size[1])
+
+            # 3. Resize Label Volume (Nearest Neighbor)
+            # Calculate zoom factor: Z is usually 1.0 (keep slices), H/W are scaled
+            label_zoom = [t / s for t, s in zip(target_shape_3d, full_label_vol.shape)]
+            
+            # Optimization: Only zoom if necessary
+            if full_label_vol.shape != target_shape_3d:
+                resized_label_vol = scipy.ndimage.zoom(full_label_vol, label_zoom, order=0, prefilter=False)
+            else:
+                resized_label_vol = full_label_vol
+
+            # 4. Fetch Matching Raw Volume
+            raw_group_path = sample_info['raw_path_group']
+            raw_attrs = zarr_root[raw_group_path].attrs.asdict()
+            best_raw_path, raw_scale, raw_translation = self._find_best_raw_scale(label_scale, raw_attrs)
+            
+            raw_array_full = zarr_root[os.path.join(raw_group_path, best_raw_path)]
+            
+            # Calculate physical bounds of the label volume to cut out the raw volume
+            label_phys_start = label_translation
+            label_phys_size = [s * sc for s, sc in zip(full_label_vol.shape, label_scale)]
+            
+            # Map to Raw Indices
+            rel_start = [ls - rs for ls, rs in zip(label_phys_start, raw_translation)]
+            start_raw = [int(round(p / s)) for p, s in zip(rel_start, raw_scale)]
+            
+            # Calculate expected raw size based on physical size coverage
+            # We calculate end index based on physical coverage to handle resolution differences
+            rel_end_phys = [s + sz for s, sz in zip(rel_start, label_phys_size)]
+            end_raw = [int(round(p / s)) for p, s in zip(rel_end_phys, raw_scale)]
+
+            # Clamp to dataset bounds
+            raw_shape = raw_array_full.shape
+            safe_slices = []
+            for i in range(3):
+                s = max(0, start_raw[i])
+                e = min(raw_shape[i], end_raw[i])
+                safe_slices.append(slice(s, e))
+            
+            raw_crop_3d = raw_array_full[tuple(safe_slices)]
+
+            # Handle edge case: if crop is empty (out of bounds)
+            if any(s == 0 for s in raw_crop_3d.shape):
+                 raw_crop_3d = np.zeros(target_shape_3d, dtype=raw_array_full.dtype)
+
+            # 5. Resize Raw Volume (Linear Interpolation) to match the Label Z-depth and target H/W
+            raw_zoom = [t / s for t, s in zip(target_shape_3d, raw_crop_3d.shape)]
+            
+            if raw_crop_3d.shape != target_shape_3d:
+                resized_raw_vol = scipy.ndimage.zoom(raw_crop_3d, raw_zoom, order=1, prefilter=False)
+            else:
+                resized_raw_vol = raw_crop_3d
+
+            # 6. Stack and Transform
+            batch_raw_tensors = []
+            batch_label_tensors = []
+
+            indices = np.linspace(0, d_dim - 1, 24).astype(int)  # TODO: do not hardcode 24
+
+            for z in indices:
+                # Extract 2D slices
+                slice_raw = resized_raw_vol[z]
+                slice_label = resized_label_vol[z]
+
+                # Normalize and convert to Tensor
+                # Add channel dim for Raw: (H, W) -> (1, H, W)
+                r_t = torch.from_numpy(slice_raw[np.newaxis, ...]).float() / 255.0
+                
+                # Apply 2D transform (expects C, H, W). Expand 1ch -> 3ch as per your design
+                r_t = transform_2d(r_t.expand(3, -1, -1))
+                
+                l_t = torch.from_numpy(slice_label).long()
+
+                batch_raw_tensors.append(r_t)
+                batch_label_tensors.append(l_t)
+
+            # Stack along batch dimension (dim 0)
+            # Final Raw: (Batch=D, C=3, H, W)
+            # Final Label: (Batch=D, H, W)
+            yield torch.stack(batch_raw_tensors), torch.stack(batch_label_tensors)
+
+        self.augment = prev_augment
 
 
 def build_data_loader(

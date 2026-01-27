@@ -30,6 +30,7 @@ from dinov3.eval.segmentation.models import build_segmentation_decoder
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.animation import FuncAnimation
 import imageio
 import io
 
@@ -180,65 +181,131 @@ def visualize_slices_3d(
     imageio.mimsave(output_filename, frames, fps=fps)
     print(f"Saved animation to {output_filename}")
 
-
 def visualize_slices_2d(
     inputs: torch.Tensor,
     preds: torch.Tensor,
     targets: torch.Tensor,
     num_classes: int,
-    step: int,
-    overlay_alpha: float = 0.3
+    filename: str = "validation_stack.gif",
+    overlay_alpha: float = 0.2,
+    fps: int = 10
 ):
     """
-    Visualizes all 2D images in a batch with their predicted and ground truth masks.
-
-    Args:
-        inputs (torch.Tensor): The input image tensor (B, C, H, W). Assumes the first channel is the image data.
-        preds (torch.Tensor): The model output logits (B, num_classes, H, W).
-        targets (torch.Tensor): The ground truth labels (B, 1, H, W).
-        num_classes (int): The total number of segmentation classes.
+    Creates an animated GIF comparing predictions and targets across a z-stack.
     """
-    # Get batch size
-    batch_size = inputs.shape[0]
+    # 1. Pre-process Tensors
+    # Convert logits (B, C, H, W) -> labels (B, H, W)
+    pred_masks = torch.argmax(preds, dim=1).cpu().numpy()
+    target_masks = targets.cpu().numpy()
+    # Take only the first channel for the grayscale background (B, H, W)
+    backgrounds = inputs[:, 0].cpu().numpy() 
+    
+    num_slices = backgrounds.shape[0]
 
-    # Convert prediction logits to discrete class labels
-    pred_masks = torch.argmax(preds, dim=1)  # Shape: (B, H, W)
-
-    # Create a consistent colormap for all classes
+    # 2. Setup Colormap (Same as your 2D function)
     colors = plt.cm.get_cmap('gist_ncar', num_classes)
     new_colors = colors(np.linspace(0, 1, num_classes))
-    new_colors[0, :] = np.array([0, 0, 0, 0])
+    new_colors[0, :] = np.array([0, 0, 0, 0])  # Transparent background class
     custom_cmap = ListedColormap(new_colors)
-    bounds = np.arange(-0.5, num_classes, 1)
-    norm = BoundaryNorm(bounds, custom_cmap.N)
+    norm = BoundaryNorm(np.arange(-0.5, num_classes, 1), custom_cmap.N)
 
-    # Set up the plot for the entire batch. `squeeze=False` ensures axes is always 2D.
-    fig, axes = plt.subplots(2, batch_size, figsize=(batch_size * 4, 8.5), squeeze=False)
+    # 3. Setup Figure
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    
+    # Initialize plot objects for updating in the animation loop
+    # We use empty arrays initially
+    im_bg_left = axes[0].imshow(backgrounds[0], cmap='gray')
+    im_mask_left = axes[0].imshow(pred_masks[0], cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
+    axes[0].set_title("Prediction")
+    axes[0].axis('off')
 
-    # Loop through each sample in the batch
-    for i in range(batch_size):
-        # Prepare data for the i-th sample
-        input_image = inputs[i, 0].cpu().numpy()
-        pred_mask = pred_masks[i].cpu().numpy()
-        target_mask = targets[i].cpu().numpy() # Extract from channel dim
+    im_bg_right = axes[1].imshow(backgrounds[0], cmap='gray')
+    im_mask_right = axes[1].imshow(target_masks[0], cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
+    axes[1].set_title("Ground Truth")
+    axes[1].axis('off')
+    
+    slice_text = fig.text(0.5, 0.02, f"Slice 0/{num_slices}", ha='center', fontsize=12)
 
-        # Top Row: Prediction
-        ax = axes[0, i]
-        ax.imshow(input_image, cmap='gray')
-        ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
-        ax.set_title(f"Prediction (Sample {i})")
-        ax.axis('off')
+    # 4. Animation Update Function
+    def update(i):
+        # Update backgrounds
+        im_bg_left.set_data(backgrounds[i])
+        im_bg_right.set_data(backgrounds[i])
+        
+        # Update overlay masks
+        im_mask_left.set_data(pred_masks[i])
+        im_mask_right.set_data(target_masks[i])
+        
+        slice_text.set_text(f"Slice {i+1}/{num_slices}")
+        return [im_bg_left, im_bg_right, im_mask_left, im_mask_right, slice_text]
 
-        # Bottom Row: Ground truth
-        ax = axes[1, i]
-        ax.imshow(input_image, cmap='gray')
-        ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
-        ax.set_title(f"Ground truth (Sample {i})")
-        ax.axis('off')
-
-    plt.tight_layout()
-    plt.savefig(f"step_{step}_2d.jpeg", bbox_inches='tight')
+    # 5. Create and Save Animation
+    ani = FuncAnimation(fig, update, frames=num_slices, interval=1000/fps, blit=True)
+    
+    # Note: Requires 'pillow' or 'imagemagick' installed: pip install pillow
+    ani.save(filename, writer='pillow')
     plt.close(fig)
+    print(f"Saved animation to {filename}")
+
+
+# def visualize_slices_2d(
+#     inputs: torch.Tensor,
+#     preds: torch.Tensor,
+#     targets: torch.Tensor,
+#     num_classes: int,
+#     step: int,
+#     overlay_alpha: float = 0.3
+# ):
+#     """
+#     Visualizes all 2D images in a batch with their predicted and ground truth masks.
+
+#     Args:
+#         inputs (torch.Tensor): The input image tensor (B, C, H, W). Assumes the first channel is the image data.
+#         preds (torch.Tensor): The model output logits (B, num_classes, H, W).
+#         targets (torch.Tensor): The ground truth labels (B, 1, H, W).
+#         num_classes (int): The total number of segmentation classes.
+#     """
+#     # Get batch size
+#     batch_size = inputs.shape[0]
+
+#     # Convert prediction logits to discrete class labels
+#     pred_masks = torch.argmax(preds, dim=1)  # Shape: (B, H, W)
+
+#     # Create a consistent colormap for all classes
+#     colors = plt.cm.get_cmap('gist_ncar', num_classes)
+#     new_colors = colors(np.linspace(0, 1, num_classes))
+#     new_colors[0, :] = np.array([0, 0, 0, 0])
+#     custom_cmap = ListedColormap(new_colors)
+#     bounds = np.arange(-0.5, num_classes, 1)
+#     norm = BoundaryNorm(bounds, custom_cmap.N)
+
+#     # Set up the plot for the entire batch. `squeeze=False` ensures axes is always 2D.
+#     fig, axes = plt.subplots(2, batch_size, figsize=(batch_size * 4, 8.5), squeeze=False)
+
+#     # Loop through each sample in the batch
+#     for i in range(batch_size):
+#         # Prepare data for the i-th sample
+#         input_image = inputs[i, 0].cpu().numpy()
+#         pred_mask = pred_masks[i].cpu().numpy()
+#         target_mask = targets[i].cpu().numpy() # Extract from channel dim
+
+#         # Top Row: Prediction
+#         ax = axes[0, i]
+#         ax.imshow(input_image, cmap='gray')
+#         ax.imshow(pred_mask, cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
+#         ax.set_title(f"Prediction (Sample {i})")
+#         ax.axis('off')
+
+#         # Bottom Row: Ground truth
+#         ax = axes[1, i]
+#         ax.imshow(input_image, cmap='gray')
+#         ax.imshow(target_mask, cmap=custom_cmap, norm=norm, alpha=overlay_alpha)
+#         ax.set_title(f"Ground truth (Sample {i})")
+#         ax.axis('off')
+
+#     plt.tight_layout()
+#     plt.savefig(f"step_{step}_2d.jpeg", bbox_inches='tight')
+#     plt.close(fig)
 
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
@@ -417,6 +484,12 @@ def main(job_config: JobConfig):
             inputs = inputs.cuda()
             targets = targets.cuda()
 
+            # if len(job_config.model.crop_size) == 2:
+            #     inputs = inputs.flatten(0, 1)
+            #     targets = targets.flatten(0, 1)
+
+            # logger.info(f"train inputs/targets shape: {inputs.shape}/{targets.shape}")
+
             optimizers.zero_grad()
             
             # run forward / backward
@@ -424,8 +497,7 @@ def main(job_config: JobConfig):
                 preds = model(inputs)
                 # resample predictions if necessary
                 preds = resample_preds(preds, targets, job_config.model.crop_size)
-
-                # logger.info(f"inputs/targets/outputs shape: {inputs.shape}/{targets.shape}/{preds.shape}")
+                # logger.info(f"train inputs/targets/preds shape: {inputs.shape}/{targets.shape}/{preds.shape}")
                 loss = loss_fn(preds, targets)
                 # need to free before bwd to avoid peaking memory
                 del preds
@@ -449,7 +521,7 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # ###### visualize & log results (NOTE: this is for debug purposes, will be removed later)
+            # ###### eval on val data & visualize results
             if train_state.step % job_config.metrics.log_freq == 0:
                 model.eval()
                 
@@ -461,11 +533,30 @@ def main(job_config: JobConfig):
                 with torch.no_grad():
                     # TODO: a bit hacky, ideally we should have separate train/val loaders
                     for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
-                        val_inputs = val_inputs.unsqueeze(0).cuda()
-                        val_targets = val_targets.unsqueeze(0).cuda()
+                        val_inputs = val_inputs.cuda()
+                        val_targets = val_targets.cuda()
                         val_preds = model(val_inputs)
                         val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
+                        # logger.info(f"val inputs/targets/preds shape: {val_inputs.shape}/{val_targets.shape}/{val_preds.shape}")
 
+                        # Visualize results
+                        if len(job_config.model.crop_size) == 2:
+                            visualize_slices_2d(
+                                val_inputs,
+                                val_preds,
+                                val_targets,
+                                job_config.model.num_classes,
+                                f"val_sample_{num_val_samples}.gif"
+                            )
+                        else:
+                            visualize_slices_3d(
+                                val_inputs,
+                                val_preds,
+                                val_targets,
+                                job_config.model.num_classes,
+                                f"val_sample_{num_val_samples}.gif"
+                            )
+                            
                         # 1. Pixel Accuracy
                         acc = compute_pixel_accuracy(val_preds, val_targets)
                         total_pixel_acc += acc
@@ -477,6 +568,9 @@ def main(job_config: JobConfig):
                         # 3. mIoU
                         batch_conf_matrix = compute_confusion_matrix(val_preds, val_targets, job_config.model.num_classes)
                         conf_matrix_all += batch_conf_matrix
+
+                        # Delete preds_vis var to free memory immediately
+                        del val_preds
 
                         num_val_samples += 1
         
@@ -509,43 +603,8 @@ def main(job_config: JobConfig):
                         logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
                         logger.info(f"Mean IoU = {avg_miou:.4f}")
 
-                        # Visualize results
-                        if len(job_config.model.crop_size) == 2:
-                            # Use the detached tensor
-                            val_preds = torch.nn.functional.interpolate(
-                                input=val_preds, 
-                                size=val_targets.shape[-2:], 
-                                mode="bilinear", 
-                                align_corners=False
-                            )
-                            visualize_slices_2d(
-                                val_inputs,
-                                val_preds,
-                                val_targets,
-                                job_config.model.num_classes,
-                                train_state.step
-                            )
-                        else:
-                            # Use the detached tensor
-                            val_preds = torch.nn.functional.interpolate(
-                                input=val_preds, 
-                                size=val_targets.shape[-3:], 
-                                mode="trilinear", 
-                                align_corners=False
-                            )
-                            visualize_slices_3d(
-                                val_inputs,
-                                val_preds,
-                                val_targets,
-                                job_config.model.num_classes,
-                                train_state.step,
-                            )
-                            
-                        # Delete preds_vis var to free memory immediately
-                        del val_preds
-
                 model.train()
-            # ###### end visualize & logging
+            # ###### end eval & visualize
 
             # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
