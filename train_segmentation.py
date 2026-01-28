@@ -546,7 +546,7 @@ def main(job_config: JobConfig):
                                 val_preds,
                                 val_targets,
                                 job_config.model.num_classes,
-                                f"val_sample_{num_val_samples}.gif"
+                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
                             )
                         else:
                             visualize_slices_3d(
@@ -554,7 +554,7 @@ def main(job_config: JobConfig):
                                 val_preds,
                                 val_targets,
                                 job_config.model.num_classes,
-                                f"val_sample_{num_val_samples}.gif"
+                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
                             )
                             
                         # 1. Pixel Accuracy

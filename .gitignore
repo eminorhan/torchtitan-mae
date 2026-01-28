@@ -16,5 +16,6 @@ out
 # temp files
 *.out
 *.log
+*.gif
 error.json
 _remote_module_non_scriptable.py
