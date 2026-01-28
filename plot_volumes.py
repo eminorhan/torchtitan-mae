@@ -87,8 +87,8 @@ def visualize_training_grid(
     grid_size: tuple = (4, 4),
     filename: str = "training_grid_animation.gif",
     viz_hw: tuple = (256, 256),
-    fps: int = 15,
-    z_stride: int = 5,   
+    fps: int = 10,
+    z_stride: int = 10,   
     overlay_alpha: float = 0.2
 ):
     """
@@ -134,6 +134,12 @@ def visualize_training_grid(
     norm = BoundaryNorm(np.arange(-0.5, num_classes, 1), custom_cmap.N)
 
     fig, axes = plt.subplots(grid_size[0], grid_size[1], figsize=(4 * grid_size[1], 4 * grid_size[0]))
+
+    # This sets the margins to 1% of the figure width/height and reduces the space between subplots to 1%.
+    # Top is set to 0.93 to leave just enough room for the suptitle.
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.96, wspace=0.01, hspace=0.01)
+    # ------------------------------
+
     axes = np.array(axes).flatten() # Flatten to easy 1D index
 
     plot_objects = []
@@ -189,6 +195,6 @@ def visualize_training_grid(
 # --- Example Usage ---
 visualize_training_grid(
     root_dir="/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data",
-    grid_size=(4, 4),
+    grid_size=(6, 6),
     filename="training_crops.gif"
 )
