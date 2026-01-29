@@ -107,6 +107,7 @@ def main(job_config: JobConfig):
         job_config.training.batch_size,
         job_config.data.dataset_folder,
         tuple(job_config.model.crop_size),
+        tuple(job_config.model.val_crop_size),
         dp_rank,
         job_config.data.augment
     )
@@ -304,7 +305,7 @@ def main(job_config: JobConfig):
                         batch_conf_matrix = compute_confusion_matrix(val_preds, val_targets, job_config.model.num_classes, ignore_index=0)
                         conf_matrix_all += batch_conf_matrix
 
-                        # Delete preds_vis var to free memory immediately
+                        # Delete preds var to free memory immediately
                         del val_preds
 
                         num_val_samples += 1

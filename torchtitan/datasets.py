@@ -32,13 +32,14 @@ class ZarrSegmentationDataset3D(IterableDataset):
     and their corresponding labeled segmentation crops. It returns fixed-size
     crops suitable for training deep learning models.
     """
-    def __init__(self, root_dir, crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
+    def __init__(self, root_dir, crop_size, val_crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the dataset by scanning for valid data samples.
         """
         super().__init__()        
         self.root_dir = root_dir
         self.crop_size = crop_size
+        self.val_crop_size = val_crop_size
         self.rank = rank
         self.raw_scale = raw_scale
         self.labels_scale = labels_scale
@@ -334,7 +335,7 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
     An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
     It inherits seeding and iteration logic from its 3D parent class.
     """
-    def __init__(self, root_dir, crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
+    def __init__(self, root_dir, crop_size, val_crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
         """
         Initializes the 2D dataloader.
 
@@ -347,9 +348,10 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
             labels_scale (str, optional): Scale level for labels.
         """
         # Call the parent constructor, but we will use our own 2D crop_size.
-        # The parent's crop_size will be ignored since we override _get_single_item.
-        super().__init__(root_dir, None, rank, val_split, raw_scale, labels_scale, augment)
-        self.crop_size = crop_size # This is a 2D tuple (H, W)
+        # The parent's crop_size will be ignored
+        super().__init__(root_dir, None, None, rank, val_split, raw_scale, labels_scale, augment)
+        self.crop_size = crop_size  # This is a 2D tuple (H, W)
+        self.val_crop_size = val_crop_size  # This is a 3D tuple (D, H, W)
 
     def _augment_data(self, raw: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -503,10 +505,8 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
                 label_scale = [1.0, 1.0, 1.0]
                 label_translation = [0.0, 0.0, 0.0]
 
-            # 2. Determine target shape
-            # We preserve the Depth (Z), but force H and W to crop_size
-            d_dim = full_label_vol.shape[0]
-            target_shape_3d = (d_dim, self.crop_size[0], self.crop_size[1])
+            # 2. Set target shape to val_crop_size
+            target_shape_3d = self.val_crop_size
 
             # 3. Resize Label Volume (Nearest Neighbor)
             # Calculate zoom factor: Z is usually 1.0 (keep slices), H/W are scaled
@@ -560,33 +560,12 @@ class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
             else:
                 resized_raw_vol = raw_crop_3d
 
-            # 6. Stack and Transform
-            batch_raw_tensors = []
-            batch_label_tensors = []
+            # Add channels to raw
+            resized_raw_vol = resized_raw_vol.unsqueeze(1).expand(-1, 3, -1, -1)
 
-            indices = np.linspace(0, d_dim - 1, 24).astype(int)  # TODO: do not hardcode 24
-
-            for z in indices:
-                # Extract 2D slices
-                slice_raw = resized_raw_vol[z]
-                slice_label = resized_label_vol[z]
-
-                # Normalize and convert to Tensor
-                # Add channel dim for Raw: (H, W) -> (1, H, W)
-                r_t = torch.from_numpy(slice_raw[np.newaxis, ...]).float() / 255.0
-                
-                # Apply 2D transform (expects C, H, W). Expand 1ch -> 3ch as per your design
-                r_t = transform_2d(r_t.expand(3, -1, -1))
-                
-                l_t = torch.from_numpy(slice_label).long()
-
-                batch_raw_tensors.append(r_t)
-                batch_label_tensors.append(l_t)
-
-            # Stack along batch dimension (dim 0)
             # Final Raw: (Batch=D, C=3, H, W)
             # Final Label: (Batch=D, H, W)
-            yield torch.stack(batch_raw_tensors), torch.stack(batch_label_tensors)
+            yield resized_raw_vol, resized_label_vol
 
         self.augment = prev_augment
 
@@ -595,6 +574,7 @@ def build_data_loader(
     batch_size: int,
     root_dir: str,
     crop_size: tuple[int, int] | tuple[int, int, int], 
+    val_crop_size: tuple[int, int, int], 
     rank: int = 0,
     augment: bool = False
 ) -> DataLoader:
@@ -614,6 +594,7 @@ def build_data_loader(
         dataset = ZarrSegmentationDataset3D(
             root_dir=root_dir, 
             crop_size=crop_size,
+            val_crop_size=val_crop_size,
             rank=rank,
             augment=augment
         )
@@ -621,6 +602,7 @@ def build_data_loader(
         dataset = ZarrSegmentationDataset2D(
             root_dir=root_dir, 
             crop_size=crop_size,
+            val_crop_size=val_crop_size,
             rank=rank,
             augment=augment
         )

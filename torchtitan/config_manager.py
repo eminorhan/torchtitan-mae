@@ -85,6 +85,7 @@ class JobConfig:
         self.parser.add_argument("--model.dinov3_repo_folder", type=str, default="/lustre/blizzard/stf218/scratch/emin/dinov3", help="Local path to DINOv3 repo (to be used for model definitions)")
         self.parser.add_argument("--model.num_classes", type=int, default=48, help="Number of classes in output head")
         self.parser.add_argument("--model.crop_size", type=int, nargs='+', default=[512], help="Size of crops (can be [int, int] or [int, int, int])")
+        self.parser.add_argument("--model.val_crop_size", type=int, nargs=3, default=[512, 512, 512], help="Size of validation crops ([int, int, int])")
         self.parser.add_argument("--model.use_fa3", default=False, action="store_true", help="Whether to use FlashAttention-3 in model implementation.")
 
         # data configs
