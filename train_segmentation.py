@@ -15,7 +15,7 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
-from torchtitan.datasets import build_data_loader
+from torchtitan.datasets_refactor import build_data_loader
 from torchtitan.evaluation import compute_pixel_accuracy, compute_confusion_matrix
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
@@ -102,13 +102,14 @@ def main(job_config: JobConfig):
 
     assert len(job_config.model.crop_size) in (2, 3), f"model.crop_size must have 2 or 3 elements, but got {len(job_config.model.crop_size)}"
 
-    # build dataloader
-    data_loader = build_data_loader(
+    # build dataloaders
+    train_loader, val_loader = build_data_loader(
         job_config.training.batch_size,
         job_config.data.dataset_folder,
         tuple(job_config.model.crop_size),
         tuple(job_config.model.val_crop_size),
         dp_rank,
+        world_size,
         job_config.data.augment
     )
 
@@ -169,7 +170,7 @@ def main(job_config: JobConfig):
             metrics = {"loss_metrics/global_avg_loss": train_state.global_avg_losses[idx], "loss_metrics/global_max_loss": train_state.global_max_losses[idx]}
             metric_logger.log(metrics, step=step)
 
-    data_iterator = iter(data_loader)
+    train_iterator = iter(train_loader)
     train_context = get_train_context(parallel_dims.loss_parallel_enabled, job_config.experimental.enable_compiled_autograd)
 
     # variables used to keep info for metrics logging
@@ -214,17 +215,11 @@ def main(job_config: JobConfig):
 
             # get batch
             data_load_start = time.perf_counter()
-            inputs, targets = next(data_iterator)
+            inputs, targets = next(train_iterator)
             data_loading_times.append(time.perf_counter() - data_load_start)
 
             inputs = inputs.cuda()
             targets = targets.cuda()
-
-            # if len(job_config.model.crop_size) == 2:
-            #     inputs = inputs.flatten(0, 1)
-            #     targets = targets.flatten(0, 1)
-
-            # logger.info(f"train inputs/targets shape: {inputs.shape}/{targets.shape}")
 
             optimizers.zero_grad()
             
@@ -257,90 +252,90 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # ###### eval on val data & visualize results
-            if train_state.step % job_config.metrics.log_freq == 0:
-                model.eval()
+            # # ###### eval on val data & visualize results
+            # if train_state.step % job_config.metrics.log_freq == 0:
+            #     model.eval()
                 
-                total_pixel_acc = 0
-                total_val_loss = 0
-                num_val_samples = 0
-                conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on the GPU
+            #     total_pixel_acc = 0
+            #     total_val_loss = 0
+            #     num_val_samples = 0
+            #     conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on the GPU
 
-                with torch.no_grad():
-                    # TODO: a bit hacky, ideally we should have separate train/val loaders
-                    for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
-                        val_inputs = val_inputs.cuda()
-                        val_targets = val_targets.cuda()
-                        val_preds = model(val_inputs)
-                        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
-                        # logger.info(f"val inputs/targets/preds shape: {val_inputs.shape}/{val_targets.shape}/{val_preds.shape}")
+            #     with torch.no_grad():
+            #         # TODO: a bit hacky, ideally we should have separate train/val loaders
+            #         for val_inputs, val_targets in data_loader.dataset.validation_iterator(): 
+            #             val_inputs = val_inputs.cuda()
+            #             val_targets = val_targets.cuda()
+            #             val_preds = model(val_inputs)
+            #             val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
+            #             # logger.info(f"val inputs/targets/preds shape: {val_inputs.shape}/{val_targets.shape}/{val_preds.shape}")
 
-                        # Visualize results
-                        if len(job_config.model.crop_size) == 2:
-                            visualize_slices_2d(
-                                val_inputs,
-                                val_preds,
-                                val_targets,
-                                job_config.model.num_classes,
-                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                            )
-                        else:
-                            visualize_slices_3d(
-                                val_inputs,
-                                val_preds,
-                                val_targets,
-                                job_config.model.num_classes,
-                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                            )
+            #             # Visualize results
+            #             if len(job_config.model.crop_size) == 2:
+            #                 visualize_slices_2d(
+            #                     val_inputs,
+            #                     val_preds,
+            #                     val_targets,
+            #                     job_config.model.num_classes,
+            #                     f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
+            #                 )
+            #             else:
+            #                 visualize_slices_3d(
+            #                     val_inputs,
+            #                     val_preds,
+            #                     val_targets,
+            #                     job_config.model.num_classes,
+            #                     f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
+            #                 )
                             
-                        # 1. Pixel Accuracy
-                        acc = compute_pixel_accuracy(val_preds, val_targets)
-                        total_pixel_acc += acc
+            #             # 1. Pixel Accuracy
+            #             acc = compute_pixel_accuracy(val_preds, val_targets)
+            #             total_pixel_acc += acc
 
-                        # 2. Val loss
-                        val_loss = loss_fn(val_preds, val_targets)
-                        total_val_loss += val_loss.item()
+            #             # 2. Val loss
+            #             val_loss = loss_fn(val_preds, val_targets)
+            #             total_val_loss += val_loss.item()
 
-                        # 3. mIoU
-                        batch_conf_matrix = compute_confusion_matrix(val_preds, val_targets, job_config.model.num_classes, ignore_index=0)
-                        conf_matrix_all += batch_conf_matrix
+            #             # 3. mIoU
+            #             batch_conf_matrix = compute_confusion_matrix(val_preds, val_targets, job_config.model.num_classes, ignore_index=0)
+            #             conf_matrix_all += batch_conf_matrix
 
-                        # Delete preds var to free memory immediately
-                        del val_preds
+            #             # Delete preds var to free memory immediately
+            #             del val_preds
 
-                        num_val_samples += 1
+            #             num_val_samples += 1
         
-                    avg_val_loss = total_val_loss / num_val_samples
-                    avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
+            #         avg_val_loss = total_val_loss / num_val_samples
+            #         avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
 
-                    avg_pixel_acc = total_pixel_acc / num_val_samples
-                    avg_pixel_acc = utils.dist_mean(avg_pixel_acc, dp_mesh) 
+            #         avg_pixel_acc = total_pixel_acc / num_val_samples
+            #         avg_pixel_acc = utils.dist_mean(avg_pixel_acc, dp_mesh) 
 
-                    # Reduce confusion matrix across ranks
-                    torch.distributed.all_reduce(conf_matrix_all, op=torch.distributed.ReduceOp.SUM)
+            #         # Reduce confusion matrix across ranks
+            #         torch.distributed.all_reduce(conf_matrix_all, op=torch.distributed.ReduceOp.SUM)
 
-                    # Log eval results and visualize some examples
-                    if torch.distributed.get_rank() == 0:
+            #         # Log eval results and visualize some examples
+            #         if torch.distributed.get_rank() == 0:
                         
-                        # Mean IoU calculation
-                        true_positive = torch.diag(conf_matrix_all)
-                        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
-                        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
-                        union = rows_sum + cols_sum - true_positive
+            #             # Mean IoU calculation
+            #             true_positive = torch.diag(conf_matrix_all)
+            #             rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+            #             cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+            #             union = rows_sum + cols_sum - true_positive
                         
-                        # Calculate IoU per class
-                        iou_per_class = true_positive / (union + 1e-6)
+            #             # Calculate IoU per class
+            #             iou_per_class = true_positive / (union + 1e-6)
                         
-                        # Mean IoU (ignoring classes that don't exist in targets)
-                        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+            #             # Mean IoU (ignoring classes that don't exist in targets)
+            #             avg_miou = iou_per_class[rows_sum > 0].mean().item()
 
-                        logger.info(f"--- Validation at step {train_state.step} ---")
-                        logger.info(f"Average validation loss = {avg_val_loss:.4f}")
-                        logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
-                        logger.info(f"Mean IoU = {avg_miou:.4f}")
+            #             logger.info(f"--- Validation at step {train_state.step} ---")
+            #             logger.info(f"Average validation loss = {avg_val_loss:.4f}")
+            #             logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
+            #             logger.info(f"Mean IoU = {avg_miou:.4f}")
 
-                model.train()
-            # ###### end eval & visualize
+            #     model.train()
+            # # ###### end eval & visualize
 
             # log train metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
