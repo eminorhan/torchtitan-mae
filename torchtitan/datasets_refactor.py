@@ -442,7 +442,7 @@ class ZarrValidationDataset2D(ZarrBaseDataset):
 
     def __iter__(self):
         # Iterate over assigned validation volumes
-        for sample_index, sample_info in enumate(self.samples):
+        for sample_idx, sample_info in enumerate(self.samples):
             zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
             
             # 1. Load Full Label Volume
