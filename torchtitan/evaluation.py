@@ -51,127 +51,75 @@ def compute_confusion_matrix(preds, targets, num_classes, ignore_index=None):
     
     return conf_matrix.float()
 
-def predict_orthoplane_volume(model, volume_tensor, batch_size=16, num_classes=64):
-    """
-    Performs orthoplane (Z, Y, X) prediction on a 3D volume using distributed inference.
+def validation_loop(model, val_loader):
+    model.eval()
     
-    Args:
-        model: The 2D segmentation model.
-        volume_tensor: Input tensor of shape (D, 3, H, W).
-        batch_size: Batch size for the internal 2D slice dataloader.
-        num_classes: Number of output classes.
-        
-    Returns:
-        Tensor of shape (D, num_classes, H, W) containing averaged logits/probs.
-    """
-    device = torch.device('cuda')
+    # Stores accumulating 3D logits/probabilities
+    # Key: sample_id -> Value: Tensor (Num_Classes, D, H, W)
+    predictions = {}
     
-    # 1. Define the three views (permutations)
-    # Z-View: (D, 3, H, W) -> Slices are (3, H, W)
-    # Y-View: (H, 3, D, W) -> Slices are (3, D, W)
-    # X-View: (W, 3, D, H) -> Slices are (3, D, H)
-    views = {
-        'Z': {'perm': (0, 1, 2, 3), 'inv_perm': (0, 1, 2, 3)}, 
-        'Y': {'perm': (2, 1, 0, 3), 'inv_perm': (2, 1, 0, 3)},
-        'X': {'perm': (3, 1, 0, 2), 'inv_perm': (2, 1, 3, 0)} 
-    }
-    
-    accumulated_preds = None
+    # Stores accumulating 3D Ground Truth labels
+    # Key: sample_id -> Value: Tensor (D, H, W)
+    ground_truths = {}
 
-    for axis_name, config in views.items():
-        # --- A. Prepare Data for this Axis ---
-        # Permute volume to place the slicing axis at dim 0 (Batch)
-        view_data = volume_tensor.permute(*config['perm']).contiguous()
-        original_size = view_data.size(0)
+    with torch.no_grad():
+        for images, labels, metas in val_loader:
+            images = images.cuda()
+            # labels is shape (Batch, H, W)
+            labels = labels.cuda()
+            
+            outputs = model(images) 
+            probs = torch.softmax(outputs, dim=1)
+            
+            batch_size = images.size(0)
+            
+            for b in range(batch_size):
+                sample_id = metas["sample_id"][b]
+                axis = metas["axis"][b].item()
+                slice_idx = metas["slice_idx"][b].item()
+                vol_shape = tuple(metas["vol_shape"][b].tolist())
+                
+                # --- Initialize Buffers ---
+                if sample_id not in predictions:
+                    # 1. Prediction Buffer (Float)
+                    num_classes = probs.size(1)
+                    predictions[sample_id] = torch.zeros((num_classes,) + vol_shape, device='cuda')
+                    
+                    # 2. Ground Truth Buffer (Long/Int)
+                    # We only need to init this once per sample
+                    ground_truths[sample_id] = torch.zeros(vol_shape, dtype=torch.long, device='cuda')
+
+                # --- Accumulate Predictions (All Axes) ---
+                current_slice_probs = probs[b] 
+                
+                if axis == 0:
+                    predictions[sample_id][:, slice_idx, :, :] += current_slice_probs
+                elif axis == 1:
+                    predictions[sample_id][:, :, slice_idx, :] += current_slice_probs
+                elif axis == 2:
+                    predictions[sample_id][:, :, :, slice_idx] += current_slice_probs
+                
+                # --- Accumulate Labels (Axis 0 Only) ---
+                # We use Axis 0 (Z) to reconstruct the label volume. 
+                # We ignore Axis 1 and 2 labels to prevent overwriting/redundancy.
+                if axis == 0:
+                    ground_truths[sample_id][slice_idx, :, :] = labels[b]
+
+    # 4. Finalize and Compare
+    for sample_id, pred_vol in predictions.items():
+        # Average the predictions
+        final_vol = pred_vol / 3.0 
+        final_seg = torch.argmax(final_vol, dim=0) # (D, H, W)
         
-        # Create a proper DataLoader for this axis
-        dataset = TensorDataset(view_data)
+        # Retrieve the reconstructed 3D label
+        gt_vol = ground_truths[sample_id] # (D, H, W)
         
-        # DistributedSampler ensures each GPU processes a subset of slices
-        sampler = DistributedSampler(
-            dataset, 
-            shuffle=False,  # Order matters for reconstruction
-            drop_last=False
-        )
-        loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=0)
+        # --- Perform Metrics ---
+        # Example: Compute Dice/IoU here
+        # dice_score = compute_dice(final_seg, gt_vol)
+        # print(f"Sample {sample_id} Dice: {dice_score}")
 
-        # --- B. Distributed Inference Loop ---
-        local_preds = []
-        model.eval()
-        
-        with torch.no_grad():
-            for batch in loader:
-                inputs = batch[0].to(device) # Unpack TensorDataset
-                outputs = model(inputs)
-                local_preds.append(outputs)
-        
-        # Concatenate local predictions: (Local_Slices, Classes, H_view, W_view)
-        if local_preds:
-            local_tensor = torch.cat(local_preds, dim=0)
-        else:
-            # Handle edge case where a rank gets 0 samples
-            # Construct a dummy tensor with correct shape but 0 batch dim
-            spatial = view_data.shape[2:]
-            local_tensor = torch.zeros((0, num_classes, *spatial), device=device)
-
-        # --- C. Gather Results from all Ranks ---
-        # We need to gather the predictions to reconstruct the full volume.
-        # Note: all_gather requires tensors to be same size across ranks, 
-        # but DistributedSampler might pad. A robust gather handles this, 
-        # but for simplicity we assume standard setup or truncate padding.
-        
-        # 1. Gather sizes to handle uneven batches
-        local_size = torch.tensor([local_tensor.size(0)], device=device)
-        all_sizes = [torch.zeros_like(local_size) for _ in range(dist.get_world_size())]
-        dist.all_gather(all_sizes, local_size)
-        
-        # 2. Pad local tensor to max size for safe all_gather
-        max_size = max([s.item() for s in all_sizes])
-        pad_amount = max_size - local_tensor.size(0)
-        if pad_amount > 0:
-            padded_tensor = torch.nn.functional.pad(local_tensor, (0,0, 0,0, 0,0, 0,pad_amount))
-        else:
-            padded_tensor = local_tensor
-
-        # 3. Gather
-        gathered_list = [torch.zeros_like(padded_tensor) for _ in range(dist.get_world_size())]
-        dist.all_gather(gathered_list, padded_tensor)
-
-        # 4. Remove padding and Concatenate
-        clean_list = []
-        for i, size_tensor in enumerate(all_sizes):
-            clean_list.append(gathered_list[i][:size_tensor.item()])
-        
-        # Full prediction for this axis: (Total_Slices, Classes, H_view, W_view)
-        full_axis_pred = torch.cat(clean_list, dim=0)
-
-        # 5. Handle DistributedSampler Duplication
-        # DistributedSampler adds padding to make total count divisible by world_size.
-        # We must truncate to the original volume size.
-        full_axis_pred = full_axis_pred[:original_size]
-
-        # --- D. Permute Back and Accumulate ---
-        # Permute back to (D, Classes, H, W)
-        # Note: We added a Class dimension at dim 1, so indices shift by 1 compared to input
-        # Input perm was (Batch, C, H, W). Output is (Batch, Classes, H, W).
-        # We need to apply the inverse perm logic carefully.
-        
-        if axis_name == 'Z':
-            # Current: (D, Cls, H, W). Target: (D, Cls, H, W)
-            aligned_pred = full_axis_pred 
-        elif axis_name == 'Y':
-            # Current: (H, Cls, D, W). Target: (D, Cls, H, W)
-            aligned_pred = full_axis_pred.permute(2, 1, 0, 3) 
-        elif axis_name == 'X':
-            # Current: (W, Cls, D, H). Target: (D, Cls, H, W)
-            aligned_pred = full_axis_pred.permute(2, 1, 3, 0)
-
-        if accumulated_preds is None:
-            accumulated_preds = aligned_pred
-        else:
-            accumulated_preds += aligned_pred
-
-    # Average the 3 views
-    final_preds = accumulated_preds / 3.0
-    
-    return final_preds
+        # --- MEMORY CLEANUP ---
+        # Critical if you have many validation samples
+        del predictions[sample_id]
+        del ground_truths[sample_id]
