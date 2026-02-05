@@ -316,6 +316,11 @@ def main(job_config: JobConfig):
                             if axis == 0:
                                 ground_truths[sample_id][slice_idx, :, :] = val_targets[b]
 
+                        # Hacky! Not sure if this is strictly neccessary.
+                        del val_preds
+                        del val_inputs
+                        del val_targets
+
                     # crop-wise (voumetric predictions)
                     for sample_id, pred_vol in predictions.items():
                         # Average the predictions & take argmax over classes
@@ -374,6 +379,10 @@ def main(job_config: JobConfig):
                         logger.info(f"--- Validation at step {train_state.step} ---")
                         logger.info(f"Average validation loss = {avg_val_loss:.4f}")
                         logger.info(f"Mean IoU = {avg_miou:.4f}")
+
+                    # Hacky!
+                    del predictions
+                    del ground_truths
 
                 model.train()
             # ###### end eval & visualize

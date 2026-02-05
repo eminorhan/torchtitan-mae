@@ -547,6 +547,7 @@ def build_data_loader(
     
     # 1. Find and split samples (once)
     train_samples, val_samples = find_and_split_samples(root_dir, labels_scale='s0')
+    print(f"[Rank {rank}]: {len(train_samples)} training samples, {len(val_samples)} validation samples.")
     
     # 2. Instantiate datasets
     if len(crop_size) == 3:
