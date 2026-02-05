@@ -20,7 +20,7 @@ head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/blizzard/stf218/scratch/emin/dinov3"
 num_classes = 64 
 crop_size = [1024, 1024]
-val_crop_size = [1024, 1024, 1024]
+val_crop_size = [432, 432, 432]
 use_fa3 = true  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
 
 [data]

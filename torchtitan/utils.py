@@ -28,6 +28,10 @@ def dist_mean(x: Union[int, float], mesh: DeviceMesh) -> float:
     return funcol.all_reduce(tensor, reduceOp=c10d.ReduceOp.AVG.name, group=mesh).item()
 
 
+def dist_sum(x: torch.Tensor, mesh: DeviceMesh) -> float:
+    return funcol.all_reduce(x, reduceOp=c10d.ReduceOp.SUM.name, group=mesh)
+
+
 def _warn_overwrite_env(env, val):
     if env in os.environ:
         logger.warning(f"ENV[{env}] = {os.environ[env]} will be overridden to {val} based on job config")

@@ -258,7 +258,7 @@ def main(job_config: JobConfig):
                 
                 total_val_loss = 0
                 num_val_samples = 0
-                conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on the GPU
+                conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
 
                 # Stores accumulating 3D logits/probabilities
                 # Key: sample_id -> Value: Tensor (Num_Classes, D, H, W)
@@ -302,7 +302,7 @@ def main(job_config: JobConfig):
 
                             # --- Accumulate Predictions (All Axes) ---
                             current_slice_probs = val_probs[b]  # (C, D, H, W)
-                            logger.info(f"current_slice_probs shape: {current_slice_probs.shape}")
+                            # logger.info(f"current_slice_probs shape: {current_slice_probs.shape}")
                             
                             if axis == 0:
                                 predictions[sample_id][:, slice_idx, :, :] += current_slice_probs
@@ -314,65 +314,66 @@ def main(job_config: JobConfig):
                             # --- Accumulate Labels (Axis 0 Only) ---
                             # We use Axis 0 (Z) to reconstruct the label volume (other axes are redundant in this case). 
                             if axis == 0:
-                                ground_truths[sample_id][slice_idx, :, :] = labels[b]
+                                ground_truths[sample_id][slice_idx, :, :] = val_targets[b]
 
-                # crop-wise (voumetric predictions)
-                for sample_id, pred_vol in predictions.items():
-                    # Average the predictions & take argmax over classes
-                    final_seg = torch.argmax(pred_vol / 3.0, dim=0)  # (D, H, W)
-                    
-                    # Retrieve the reconstructed 3D label
-                    gt_vol = ground_truths[sample_id] # (D, H, W)
+                    # crop-wise (voumetric predictions)
+                    for sample_id, pred_vol in predictions.items():
+                        # Average the predictions & take argmax over classes
+                        final_seg = torch.argmax(pred_vol / 3.0, dim=0)  # (D, H, W)
+                        
+                        # Retrieve the reconstructed 3D label
+                        gt_vol = ground_truths[sample_id] # (D, H, W)
 
-                    # mIoU
-                    batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
-                    conf_matrix_all += batch_conf_matrix
+                        # mIoU
+                        batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
+                        conf_matrix_all += batch_conf_matrix
 
-                    # # Visualize results
-                    # if len(job_config.model.crop_size) == 2:
-                    #     visualize_slices_2d(
-                    #         val_inputs,
-                    #         val_preds,
-                    #         val_targets,
-                    #         job_config.model.num_classes,
-                    #         f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                    #     )
-                    # else:
-                    #     visualize_slices_3d(
-                    #         val_inputs,
-                    #         val_preds,
-                    #         val_targets,
-                    #         job_config.model.num_classes,
-                    #         f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                    #     )
+                        # # Visualize results
+                        # if len(job_config.model.crop_size) == 2:
+                        #     visualize_slices_2d(
+                        #         val_inputs,
+                        #         val_preds,
+                        #         val_targets,
+                        #         job_config.model.num_classes,
+                        #         f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
+                        #     )
+                        # else:
+                        #     visualize_slices_3d(
+                        #         val_inputs,
+                        #         val_preds,
+                        #         val_targets,
+                        #         job_config.model.num_classes,
+                        #         f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
+                        #     )
 
-                torch.distributed.barrier()
-                
-                # Reduce val loss
-                avg_val_loss = total_val_loss / num_val_samples
-                avg_val_loss = utils.dist_mean(avg_val_loss, dp_mesh)  # reduce val loss across ranks
+                    # Reduce val loss
+                    local_stats = torch.tensor([total_val_loss, num_val_samples], device='cuda', dtype=torch.float32)
+                    local_stats = utils.dist_sum(local_stats, dp_mesh)
 
-                # Reduce confusion matrix across ranks
-                torch.distributed.all_reduce(conf_matrix_all, op=torch.distributed.ReduceOp.SUM)
+                    global_total_loss = local_stats[0].item()
+                    global_total_samples = local_stats[1].item()
+                    avg_val_loss = global_total_loss / global_total_samples
 
-                # Log eval results and visualize some examples
-                if torch.distributed.get_rank() == 0:
-                    # Mean IoU calculation
-                    true_positive = torch.diag(conf_matrix_all)
-                    rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
-                    cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
-                    union = rows_sum + cols_sum - true_positive
-                    
-                    # Calculate IoU per class
-                    iou_per_class = true_positive / (union + 1e-6)
-                    
-                    # Mean IoU (ignoring classes that don't exist in targets)
-                    avg_miou = iou_per_class[rows_sum > 0].mean().item()
+                    # Reduce confusion matrix across ranks
+                    conf_matrix_all = utils.dist_sum(conf_matrix_all, dp_mesh)
 
-                    logger.info(f"--- Validation at step {train_state.step} ---")
-                    logger.info(f"Average validation loss = {avg_val_loss:.4f}")
-                    logger.info(f"Average pixel accuracy = {avg_pixel_acc:.4f}")
-                    logger.info(f"Mean IoU = {avg_miou:.4f}")
+                    # Log eval results and visualize some examples
+                    if torch.distributed.get_rank() == 0:
+                        # Mean IoU calculation
+                        true_positive = torch.diag(conf_matrix_all)
+                        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+                        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+                        union = rows_sum + cols_sum - true_positive
+                        
+                        # Calculate IoU per class
+                        iou_per_class = true_positive / (union + 1e-6)
+                        
+                        # Mean IoU (ignoring classes that don't exist in targets)
+                        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+
+                        logger.info(f"--- Validation at step {train_state.step} ---")
+                        logger.info(f"Average validation loss = {avg_val_loss:.4f}")
+                        logger.info(f"Mean IoU = {avg_miou:.4f}")
 
                 model.train()
             # ###### end eval & visualize
