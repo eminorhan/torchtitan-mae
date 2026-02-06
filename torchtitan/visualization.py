@@ -102,23 +102,21 @@ def visualize_slices_2d(
     """
     Creates an animated GIF comparing predictions and targets across a z-stack.
     """
-    # 1. Pre-process Tensors
-    # Convert logits (B, C, H, W) -> labels (B, H, W)
-    pred_masks = torch.argmax(preds, dim=1).cpu().numpy()
+    # 1. Move tensors
+    pred_masks = preds.cpu().numpy()
     target_masks = targets.cpu().numpy()
-    # Take only the first channel for the grayscale background (B, H, W)
-    backgrounds = inputs[:, 0].cpu().numpy() 
+    backgrounds = inputs.numpy()  # inputs.cpu().numpy() 
     
     num_slices = backgrounds.shape[0]
 
-    # 2. Setup Colormap (Same as your 2D function)
+    # 2. Setup colormap
     colors = plt.cm.get_cmap('gist_ncar', num_classes)
     new_colors = colors(np.linspace(0, 1, num_classes))
     new_colors[0, :] = np.array([0, 0, 0, 0])  # Transparent background class
     custom_cmap = ListedColormap(new_colors)
     norm = BoundaryNorm(np.arange(-0.5, num_classes, 1), custom_cmap.N)
 
-    # 3. Setup Figure
+    # 3. Setup figure
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     
     # Initialize plot objects for updating in the animation loop
@@ -135,7 +133,7 @@ def visualize_slices_2d(
     
     slice_text = fig.text(0.5, 0.02, f"Slice 0/{num_slices}", ha='center', fontsize=12)
 
-    # 4. Animation Update Function
+    # 4. Animation update function
     def update(i):
         # Update backgrounds
         im_bg_left.set_data(backgrounds[i])

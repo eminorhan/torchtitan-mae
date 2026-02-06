@@ -264,9 +264,13 @@ def main(job_config: JobConfig):
                 # Key: sample_id -> Value: Tensor (Num_Classes, D, H, W)
                 predictions = {}
                 
-                # Stores accumulating 3D Ground Truth labels
+                # Stores accumulating 3D ground truth labels
                 # Key: sample_id -> Value: Tensor (D, H, W)
                 ground_truths = {}
+
+                # Stores accumulating 3D raw inputs
+                # Key: sample_id -> Value: Tensor (D, H, W)
+                raw_inputs = {}
 
                 with torch.no_grad():
                     for val_inputs, val_targets, val_metas in val_loader:
@@ -289,7 +293,7 @@ def main(job_config: JobConfig):
                             sample_id = val_metas["sample_id"][b]
                             axis = val_metas["axis"][b].item()
                             slice_idx = val_metas["slice_idx"][b].item()
-                            vol_shape = tuple(val_metas["vol_shape"][b].tolist())
+                            vol_shape = tuple(val_metas["vol_shape"][b].tolist())  # (D, H, W)
                             
                             # --- Initialize Buffers ---
                             if sample_id not in predictions:
@@ -299,9 +303,10 @@ def main(job_config: JobConfig):
                                 # Ground Truth Buffer (Long/Int)
                                 # We only need to init this once per sample
                                 ground_truths[sample_id] = torch.zeros(vol_shape, dtype=torch.long, device='cuda')
+                                raw_inputs[sample_id] = torch.zeros(vol_shape, dtype=torch.float32, device='cpu')  # this need not be on GPU
 
                             # --- Accumulate Predictions (All Axes) ---
-                            current_slice_probs = val_probs[b]  # (C, D, H, W)
+                            current_slice_probs = val_probs[b]  
                             # logger.info(f"current_slice_probs shape: {current_slice_probs.shape}")
                             
                             if axis == 0:
@@ -315,6 +320,7 @@ def main(job_config: JobConfig):
                             # We use Axis 0 (Z) to reconstruct the label volume (other axes are redundant in this case). 
                             if axis == 0:
                                 ground_truths[sample_id][slice_idx, :, :] = val_targets[b]
+                                raw_inputs[sample_id][slice_idx, :, :] = val_inputs[b, 0, :, :].cpu()  # take the first channel only
 
                         # Hacky! Not sure if this is strictly neccessary.
                         del val_preds
@@ -329,27 +335,30 @@ def main(job_config: JobConfig):
                         # Retrieve the reconstructed 3D label
                         gt_vol = ground_truths[sample_id] # (D, H, W)
 
+                        # Retrieve the raw inputs
+                        raw_vol = raw_inputs[sample_id] # (D, H, W)
+
                         # mIoU
                         batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
                         conf_matrix_all += batch_conf_matrix
 
-                        # # Visualize results
-                        # if len(job_config.model.crop_size) == 2:
-                        #     visualize_slices_2d(
-                        #         val_inputs,
-                        #         val_preds,
-                        #         val_targets,
-                        #         job_config.model.num_classes,
-                        #         f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                        #     )
-                        # else:
-                        #     visualize_slices_3d(
-                        #         val_inputs,
-                        #         val_preds,
-                        #         val_targets,
-                        #         job_config.model.num_classes,
-                        #         f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                        #     )
+                        # Visualize results
+                        if len(job_config.model.crop_size) == 2:
+                            visualize_slices_2d(
+                                raw_vol,
+                                final_seg,
+                                gt_vol,
+                                job_config.model.num_classes,
+                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
+                            )
+                        else:
+                            visualize_slices_3d(
+                                raw_vol,
+                                final_seg,
+                                gt_vol,
+                                job_config.model.num_classes,
+                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
+                            )
 
                     # Reduce val loss
                     local_stats = torch.tensor([total_val_loss, num_val_samples], device='cuda', dtype=torch.float32)
@@ -383,6 +392,7 @@ def main(job_config: JobConfig):
                     # Hacky!
                     del predictions
                     del ground_truths
+                    del raw_inputs
 
                 model.train()
             # ###### end eval & visualize

@@ -23,7 +23,7 @@ def make_transform_3d():
 transform_2d = make_transform_2d()
 transform_3d = make_transform_3d()
 
-def find_and_split_samples(root_dir, labels_scale, val_split=0.112, seed=1):
+def find_and_split_samples(root_dir, labels_scale, val_split=0.11, seed=1):
     """
     Scans the directory once and returns deterministic train/val splits of sample metadata.
     """
