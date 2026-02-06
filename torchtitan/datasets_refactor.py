@@ -23,7 +23,7 @@ def make_transform_3d():
 transform_2d = make_transform_2d()
 transform_3d = make_transform_3d()
 
-def find_and_split_samples(root_dir, labels_scale, val_split=0.05, seed=1):
+def find_and_split_samples(root_dir, labels_scale, val_split=0.112, seed=1):
     """
     Scans the directory once and returns deterministic train/val splits of sample metadata.
     """
@@ -241,7 +241,7 @@ class ZarrTrainDataset3D(ZarrBaseDataset):
         if self.augment:
             final_raw_crop, final_label_mask = self._augment_data(final_raw_crop, final_label_mask)
 
-        raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...]).float() / 255.0
+        raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...])
         label_tensor = torch.from_numpy(final_label_mask).long()
 
         return transform_3d(raw_tensor), label_tensor
@@ -362,7 +362,7 @@ class ZarrTrainDataset2D(ZarrBaseDataset):
         if self.augment:
             final_raw_slice, final_label_slice = self._augment_data(final_raw_slice, final_label_slice)
 
-        raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
+        raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...])
         label_tensor = torch.from_numpy(final_label_slice).long()
         return transform_2d(raw_tensor.expand(3, -1, -1)), label_tensor
 
@@ -422,7 +422,7 @@ class ZarrValidationDataset3D(ZarrBaseDataset):
 
             # Raw: (1, D, H, W) -> expand to (3, D, H, W) if needed, or keep 1
             # Prompt implies 3 channels usually for 2D, but let's stick to 1 channel 3D + transform
-            raw_tensor = torch.from_numpy(resized_raw_vol).float() / 255.0
+            raw_tensor = torch.from_numpy(resized_raw_vol)
             raw_tensor = raw_tensor.unsqueeze(0).expand(3, -1, -1, -1) # (3, D, H, W)
             label_tensor = torch.from_numpy(resized_label_vol).long()
 
@@ -488,7 +488,7 @@ class ZarrValidationDataset2D(ZarrBaseDataset):
 
             # 4. Prepare Tensors
             # Normalize Raw: (D, H, W) -> Float Tensor
-            raw_tensor_vol = torch.from_numpy(resized_raw_vol).float() / 255.0
+            raw_tensor_vol = torch.from_numpy(resized_raw_vol)
             label_tensor_vol = torch.from_numpy(resized_label_vol).long()
 
             # --- ORTHOPLANE ITERATION ---
