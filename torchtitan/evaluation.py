@@ -174,7 +174,7 @@ def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
 
     rank = torch.distributed.get_rank()
 
-    for val_inputs, val_targets, val_metas in val_loader:
+    for val_inputs, val_targets in val_loader:
         val_inputs = val_inputs.cuda()
         val_targets = val_targets.cuda()
         val_preds = model(val_inputs)
