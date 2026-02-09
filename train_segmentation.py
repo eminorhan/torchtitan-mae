@@ -313,11 +313,12 @@ def main(job_config: JobConfig):
                 model.eval()
                 
                 with torch.no_grad():
-                    avg_val_loss, avg_miou = eval_fn(model, val_loader, job_config, loss_fn)
-                    
-                logger.info(f"--- Validation at step {train_state.step} ---")
-                logger.info(f"Average validation loss = {avg_val_loss:.4f}")
-                logger.info(f"Mean IoU = {avg_miou:.4f}")
+                    avg_val_loss, avg_miou = eval_fn(model, val_loader, job_config, loss_fn, resample_preds, dp_mesh)
+
+                if torch.distributed.get_rank() == 0:    
+                    logger.info(f"--- Validation at step {train_state.step} ---")
+                    logger.info(f"Average validation loss = {avg_val_loss:.4f}")
+                    logger.info(f"Mean IoU = {avg_miou:.4f}")
 
                 model.train()
             # ###### end eval & visualize ######

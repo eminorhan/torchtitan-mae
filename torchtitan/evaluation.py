@@ -50,7 +50,7 @@ def compute_confusion_matrix(preds, targets, num_classes, ignore_index=None):
     
     return conf_matrix.float()
 
-def evaluate_2d(model, val_loader, job_config, loss_fn):
+def evaluate_2d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
     # Initialize the counters
     total_val_loss = 0
     num_val_samples = 0
@@ -72,7 +72,7 @@ def evaluate_2d(model, val_loader, job_config, loss_fn):
         val_inputs = val_inputs.cuda()
         val_targets = val_targets.cuda()
         val_preds = model(val_inputs)
-        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
+        val_preds = resample_fn(val_preds, val_targets, job_config.model.crop_size)
         # logger.info(f"val inputs/targets/preds shape: {images.shape}/{labels.shape}/{outputs.shape}")
 
         # 1. Val loss
@@ -152,23 +152,21 @@ def evaluate_2d(model, val_loader, job_config, loss_fn):
     # Reduce confusion matrix across ranks
     conf_matrix_all = dist_sum(conf_matrix_all, dp_mesh)
 
-    # Log eval results and visualize some examples
-    if torch.distributed.get_rank() == 0:
-        # Mean IoU calculation
-        true_positive = torch.diag(conf_matrix_all)
-        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
-        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
-        union = rows_sum + cols_sum - true_positive
-        
-        # Calculate IoU per class
-        iou_per_class = true_positive / (union + 1e-6)
-        
-        # Mean IoU (ignoring classes that don't exist in targets)
-        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+    # Mean IoU calculation
+    true_positive = torch.diag(conf_matrix_all)
+    rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+    cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+    union = rows_sum + cols_sum - true_positive
+    
+    # Calculate IoU per class
+    iou_per_class = true_positive / (union + 1e-6)
+    
+    # Mean IoU (ignoring classes that don't exist in targets)
+    avg_miou = iou_per_class[rows_sum > 0].mean().item()
 
     return avg_val_loss, avg_miou
 
-def evaluate_3d(model, val_loader, job_config, loss_fn):
+def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
     # Initialize the counters
     total_val_loss = 0
     num_val_samples = 0
@@ -180,7 +178,7 @@ def evaluate_3d(model, val_loader, job_config, loss_fn):
         val_inputs = val_inputs.cuda()
         val_targets = val_targets.cuda()
         val_preds = model(val_inputs)
-        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
+        val_preds = resample_fn(val_preds, val_targets, job_config.model.crop_size)
         # logger.info(f"val inputs/targets/preds shape: {images.shape}/{labels.shape}/{outputs.shape}")
 
         # 1. Val loss
@@ -226,18 +224,16 @@ def evaluate_3d(model, val_loader, job_config, loss_fn):
     # Reduce confusion matrix across ranks
     conf_matrix_all = dist_sum(conf_matrix_all, dp_mesh)
 
-    # Log eval results and visualize some examples
-    if torch.distributed.get_rank() == 0:
-        # Mean IoU calculation
-        true_positive = torch.diag(conf_matrix_all)
-        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
-        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
-        union = rows_sum + cols_sum - true_positive
-        
-        # Calculate IoU per class
-        iou_per_class = true_positive / (union + 1e-6)
-        
-        # Mean IoU (ignoring classes that don't exist in targets)
-        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+    # Mean IoU calculation
+    true_positive = torch.diag(conf_matrix_all)
+    rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+    cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+    union = rows_sum + cols_sum - true_positive
+    
+    # Calculate IoU per class
+    iou_per_class = true_positive / (union + 1e-6)
+    
+    # Mean IoU (ignoring classes that don't exist in targets)
+    avg_miou = iou_per_class[rows_sum > 0].mean().item()
 
     return avg_val_loss, avg_miou
