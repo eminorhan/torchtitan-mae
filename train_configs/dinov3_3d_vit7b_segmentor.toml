@@ -10,20 +10,22 @@ save_traces_folder = "profile_trace"
 profile_freq = 10
 
 [metrics]
-log_freq = 100
+log_freq = 10
 enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]
 backbone = "dinov3_vit7b16_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16"] + 3D versions
 head = "linear"  # ["linear", "m2f"]
-dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
-backbone_pretrained = true
+dinov3_repo_folder = "/lustre/blizzard/stf218/scratch/emin/dinov3"
 num_classes = 64 
 crop_size = [480, 480, 480]
+val_crop_size = [480, 480, 480]
+use_fa3 = true  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
 
 [data]
-dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+dataset_folder = "/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+augment = true  # whether to use "cheap" data augmentations
 
 [optimizer]
 name = "AdamW"
@@ -49,7 +51,7 @@ interval_type = "steps"
 interval = 100
 model_weights_only = false
 export_dtype = "bfloat16"
-async_mode = "async"  # ["disabled", "async", "async_with_pinned_mem"]
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
 
 [activation_checkpoint]
 mode = 'full'  # ['none', 'selective', 'full']

@@ -244,7 +244,7 @@ class ZarrTrainDataset3D(ZarrBaseDataset):
         raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...])
         label_tensor = torch.from_numpy(final_label_mask).long()
 
-        return transform_3d(raw_tensor), label_tensor
+        return transform_3d(raw_tensor.expand(3, -1, -1, -1)), label_tensor
 
     def __iter__(self):
         while True:
