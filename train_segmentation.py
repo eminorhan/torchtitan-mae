@@ -23,7 +23,7 @@ from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import parallelize_dino, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-from torchtitan.visualization import visualize_slices_2d, visualize_slices_3d
+from torchtitan.evaluation import evaluate_2d, evaluate_3d
 from torchvision.utils import save_image
 
 from dinov3.eval.segmentation.models import build_segmentation_decoder
@@ -196,6 +196,12 @@ def main(job_config: JobConfig):
                 preds = torch.nn.functional.interpolate(input=preds, size=labels.shape[-3:], mode="trilinear", align_corners=False)
         return preds
 
+    # eval function
+    if len(job_config.model.crop_size) == 2:
+        eval_fn = evaluate_2d
+    else:
+        eval_fn = evaluate_3d
+
     # train loop
     logger.info(
         f"Training starts at step {train_state.step + 1}, "
@@ -252,152 +258,7 @@ def main(job_config: JobConfig):
 
             losses_since_last_log.append(loss)
 
-            # ###### eval on val data & visualize results
-            if train_state.step % job_config.metrics.log_freq == 0:
-                model.eval()
-                
-                total_val_loss = 0
-                num_val_samples = 0
-                conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
-
-                # Stores accumulating 3D logits/probabilities
-                # Key: sample_id -> Value: Tensor (Num_Classes, D, H, W)
-                predictions = {}
-                
-                # Stores accumulating 3D ground truth labels
-                # Key: sample_id -> Value: Tensor (D, H, W)
-                ground_truths = {}
-
-                # Stores accumulating 3D raw inputs
-                # Key: sample_id -> Value: Tensor (D, H, W)
-                raw_inputs = {}
-
-                with torch.no_grad():
-                    for val_inputs, val_targets, val_metas in val_loader:
-                        val_inputs = val_inputs.cuda()
-                        val_targets = val_targets.cuda()
-                        val_preds = model(val_inputs)
-                        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
-                        # logger.info(f"val inputs/targets/preds shape: {images.shape}/{labels.shape}/{outputs.shape}")
-
-                        # 1. Val loss
-                        val_loss = loss_fn(val_preds, val_targets)
-                        total_val_loss += val_loss.item()
-                        num_val_samples += 1
-
-                        # 2. Building crop-wise (volumetric) predictions
-                        val_probs = torch.softmax(val_preds, dim=1)
-                        val_batch_size = val_inputs.size(0)
-                        
-                        for b in range(val_batch_size):
-                            sample_id = val_metas["sample_id"][b]
-                            axis = val_metas["axis"][b].item()
-                            slice_idx = val_metas["slice_idx"][b].item()
-                            vol_shape = tuple(val_metas["vol_shape"][b].tolist())  # (D, H, W)
-                            
-                            # --- Initialize Buffers ---
-                            if sample_id not in predictions:
-                                # Prediction Buffer (Float)
-                                predictions[sample_id] = torch.zeros((job_config.model.num_classes,) + vol_shape, device='cuda')
-                                
-                                # Ground Truth Buffer (Long/Int)
-                                # We only need to init this once per sample
-                                ground_truths[sample_id] = torch.zeros(vol_shape, dtype=torch.long, device='cuda')
-                                raw_inputs[sample_id] = torch.zeros(vol_shape, dtype=torch.float32, device='cpu')  # this need not be on GPU
-
-                            # --- Accumulate Predictions (All Axes) ---
-                            current_slice_probs = val_probs[b]  
-                            # logger.info(f"current_slice_probs shape: {current_slice_probs.shape}")
-                            
-                            if axis == 0:
-                                predictions[sample_id][:, slice_idx, :, :] += current_slice_probs
-                            elif axis == 1:
-                                predictions[sample_id][:, :, slice_idx, :] += current_slice_probs
-                            elif axis == 2:
-                                predictions[sample_id][:, :, :, slice_idx] += current_slice_probs
-                            
-                            # --- Accumulate Labels (Axis 0 Only) ---
-                            # We use Axis 0 (Z) to reconstruct the label volume (other axes are redundant in this case). 
-                            if axis == 0:
-                                ground_truths[sample_id][slice_idx, :, :] = val_targets[b]
-                                raw_inputs[sample_id][slice_idx, :, :] = val_inputs[b, 0, :, :].cpu()  # take the first channel only
-
-                        # Hacky! Not sure if this is strictly neccessary.
-                        del val_preds
-                        del val_inputs
-                        del val_targets
-
-                    # crop-wise (voumetric predictions)
-                    for sample_id, pred_vol in predictions.items():
-                        # Average the predictions & take argmax over classes
-                        final_seg = torch.argmax(pred_vol / 3.0, dim=0)  # (D, H, W)
-                        
-                        # Retrieve the reconstructed 3D label
-                        gt_vol = ground_truths[sample_id] # (D, H, W)
-
-                        # Retrieve the raw inputs
-                        raw_vol = raw_inputs[sample_id] # (D, H, W)
-
-                        # mIoU
-                        batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
-                        conf_matrix_all += batch_conf_matrix
-
-                        # Visualize results
-                        if len(job_config.model.crop_size) == 2:
-                            visualize_slices_2d(
-                                raw_vol,
-                                final_seg,
-                                gt_vol,
-                                job_config.model.num_classes,
-                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                            )
-                        else:
-                            visualize_slices_3d(
-                                raw_vol,
-                                final_seg,
-                                gt_vol,
-                                job_config.model.num_classes,
-                                f"{job_config.model.backbone}_val_sample_{num_val_samples}.gif"
-                            )
-
-                    # Reduce val loss
-                    local_stats = torch.tensor([total_val_loss, num_val_samples], device='cuda', dtype=torch.float32)
-                    local_stats = utils.dist_sum(local_stats, dp_mesh)
-
-                    global_total_loss = local_stats[0].item()
-                    global_total_samples = local_stats[1].item()
-                    avg_val_loss = global_total_loss / global_total_samples
-
-                    # Reduce confusion matrix across ranks
-                    conf_matrix_all = utils.dist_sum(conf_matrix_all, dp_mesh)
-
-                    # Log eval results and visualize some examples
-                    if torch.distributed.get_rank() == 0:
-                        # Mean IoU calculation
-                        true_positive = torch.diag(conf_matrix_all)
-                        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
-                        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
-                        union = rows_sum + cols_sum - true_positive
-                        
-                        # Calculate IoU per class
-                        iou_per_class = true_positive / (union + 1e-6)
-                        
-                        # Mean IoU (ignoring classes that don't exist in targets)
-                        avg_miou = iou_per_class[rows_sum > 0].mean().item()
-
-                        logger.info(f"--- Validation at step {train_state.step} ---")
-                        logger.info(f"Average validation loss = {avg_val_loss:.4f}")
-                        logger.info(f"Mean IoU = {avg_miou:.4f}")
-
-                    # Hacky!
-                    del predictions
-                    del ground_truths
-                    del raw_inputs
-
-                model.train()
-            # ###### end eval & visualize
-
-            # log train metrics
+            # ###### log train metrics ######
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
                 losses = [loss.item() for loss in losses_since_last_log]
                 avg_loss, max_loss = sum(losses) / len(losses), max(losses)
@@ -446,6 +307,20 @@ def main(job_config: JobConfig):
                 data_loading_times.clear()
                 time_last_log = time.perf_counter()
                 gpu_memory_monitor.reset_peak_stats()
+
+            # ###### eval on val data & visualize results ######
+            if train_state.step % job_config.metrics.log_freq == 0:
+                model.eval()
+                
+                with torch.no_grad():
+                    avg_val_loss, avg_miou = eval_fn(model, val_loader, job_config, loss_fn)
+                    
+                logger.info(f"--- Validation at step {train_state.step} ---")
+                logger.info(f"Average validation loss = {avg_val_loss:.4f}")
+                logger.info(f"Mean IoU = {avg_miou:.4f}")
+
+                model.train()
+            # ###### end eval & visualize ######
 
             checkpoint.save(train_state.step, force=(train_state.step == job_config.training.steps))
 

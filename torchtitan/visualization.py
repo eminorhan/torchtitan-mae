@@ -103,8 +103,8 @@ def visualize_slices_2d(
     Creates an animated GIF comparing predictions and targets across a z-stack.
     """
     # 1. Move tensors
-    pred_masks = preds.cpu().numpy()
-    target_masks = targets.cpu().numpy()
+    pred_masks = preds.detach().cpu().numpy()
+    target_masks = targets.detach().cpu().numpy()
     backgrounds = inputs.numpy()  # inputs.cpu().numpy() 
     
     num_slices = backgrounds.shape[0]

@@ -1,4 +1,6 @@
 import torch
+from .utils import dist_sum
+from .visualization import visualize_slices_2d, visualize_slices_3d
 
 def compute_pixel_accuracy(logits, targets):
     """
@@ -47,3 +49,195 @@ def compute_confusion_matrix(preds, targets, num_classes, ignore_index=None):
     conf_matrix = hist.reshape(num_classes, num_classes)
     
     return conf_matrix.float()
+
+def evaluate_2d(model, val_loader, job_config, loss_fn):
+    # Initialize the counters
+    total_val_loss = 0
+    num_val_samples = 0
+    conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
+
+    # Stores accumulating 3D logits/probabilities
+    # Key: sample_id -> Value: Tensor (Num_Classes, D, H, W)
+    predictions = {}
+    
+    # Stores accumulating 3D ground truth labels
+    # Key: sample_id -> Value: Tensor (D, H, W)
+    ground_truths = {}
+
+    # Stores accumulating 3D raw inputs
+    # Key: sample_id -> Value: Tensor (D, H, W)
+    raw_inputs = {}
+
+    for val_inputs, val_targets, val_metas in val_loader:
+        val_inputs = val_inputs.cuda()
+        val_targets = val_targets.cuda()
+        val_preds = model(val_inputs)
+        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
+        # logger.info(f"val inputs/targets/preds shape: {images.shape}/{labels.shape}/{outputs.shape}")
+
+        # 1. Val loss
+        val_loss = loss_fn(val_preds, val_targets)
+        total_val_loss += val_loss.item()
+        num_val_samples += 1
+
+        # 2. Building crop-wise (volumetric) predictions
+        val_probs = torch.softmax(val_preds, dim=1)
+        val_batch_size = val_inputs.size(0)
+        
+        for b in range(val_batch_size):
+            sample_id = val_metas["sample_id"][b]
+            axis = val_metas["axis"][b].item()
+            slice_idx = val_metas["slice_idx"][b].item()
+            vol_shape = tuple(val_metas["vol_shape"][b].tolist())  # (D, H, W)
+            
+            # --- Initialize Buffers ---
+            if sample_id not in predictions:
+                # Prediction Buffer (Float)
+                predictions[sample_id] = torch.zeros((job_config.model.num_classes,) + vol_shape, device='cuda')
+                
+                # Ground Truth Buffer (Long/Int)
+                # We only need to init this once per sample
+                ground_truths[sample_id] = torch.zeros(vol_shape, dtype=torch.long, device='cuda')
+                raw_inputs[sample_id] = torch.zeros(vol_shape, dtype=torch.float32, device='cpu')  # this need not be on GPU
+
+            # --- Accumulate Predictions (All Axes) ---
+            current_slice_probs = val_probs[b]  
+            # logger.info(f"current_slice_probs shape: {current_slice_probs.shape}")
+            
+            if axis == 0:
+                predictions[sample_id][:, slice_idx, :, :] += current_slice_probs
+            elif axis == 1:
+                predictions[sample_id][:, :, slice_idx, :] += current_slice_probs
+            elif axis == 2:
+                predictions[sample_id][:, :, :, slice_idx] += current_slice_probs
+            
+            # --- Accumulate Labels (Axis 0 Only) ---
+            # We use Axis 0 (Z) to reconstruct the label volume (other axes are redundant in this case). 
+            if axis == 0:
+                ground_truths[sample_id][slice_idx, :, :] = val_targets[b]
+                raw_inputs[sample_id][slice_idx, :, :] = val_inputs[b, 0, :, :].detach().cpu()  # take the first channel only
+
+    # crop-wise (voumetric predictions)
+    for sample_id, pred_vol in predictions.items():
+        # Average the predictions & take argmax over classes
+        final_seg = torch.argmax(pred_vol / 3.0, dim=0)  # (D, H, W)
+        
+        # Retrieve the reconstructed 3D label
+        gt_vol = ground_truths[sample_id] # (D, H, W)
+
+        # Retrieve the raw inputs
+        raw_vol = raw_inputs[sample_id] # (D, H, W)
+
+        # mIoU
+        batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
+        conf_matrix_all += batch_conf_matrix
+
+        # Visualize results
+        visualize_slices_2d(
+            raw_vol,
+            final_seg,
+            gt_vol,
+            job_config.model.num_classes,
+            f"{job_config.model.backbone}_val_sample_{sample_id}.gif"
+        )
+
+    # Reduce val loss
+    local_stats = torch.tensor([total_val_loss, num_val_samples], device='cuda', dtype=torch.float32)
+    local_stats = dist_sum(local_stats, dp_mesh)
+
+    global_total_loss = local_stats[0].item()
+    global_total_samples = local_stats[1].item()
+    avg_val_loss = global_total_loss / global_total_samples
+
+    # Reduce confusion matrix across ranks
+    conf_matrix_all = dist_sum(conf_matrix_all, dp_mesh)
+
+    # Log eval results and visualize some examples
+    if torch.distributed.get_rank() == 0:
+        # Mean IoU calculation
+        true_positive = torch.diag(conf_matrix_all)
+        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+        union = rows_sum + cols_sum - true_positive
+        
+        # Calculate IoU per class
+        iou_per_class = true_positive / (union + 1e-6)
+        
+        # Mean IoU (ignoring classes that don't exist in targets)
+        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+
+    return avg_val_loss, avg_miou
+
+def evaluate_3d(model, val_loader, job_config, loss_fn):
+    # Initialize the counters
+    total_val_loss = 0
+    num_val_samples = 0
+    conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
+
+    rank = torch.distributed.get_rank()
+
+    for val_inputs, val_targets, val_metas in val_loader:
+        val_inputs = val_inputs.cuda()
+        val_targets = val_targets.cuda()
+        val_preds = model(val_inputs)
+        val_preds = resample_preds(val_preds, val_targets, job_config.model.crop_size)
+        # logger.info(f"val inputs/targets/preds shape: {images.shape}/{labels.shape}/{outputs.shape}")
+
+        # 1. Val loss
+        val_loss = loss_fn(val_preds, val_targets)
+        total_val_loss += val_loss.item()
+        num_val_samples += 1
+
+        # iterate over the batch to obtain crop-wise (voumetric) predictions
+        for b in range(val_preds.shape[0]):
+            # Average the predictions & take argmax over classes
+            final_seg = torch.argmax(val_preds[b], dim=1)  # (D, H, W)
+            
+            # Retrieve the reconstructed 3D label
+            gt_vol = val_targets[b] # (D, H, W)
+
+            # Retrieve the raw inputs
+            raw_vol = val_inputs[b] # (D, H, W)
+
+            # mIoU
+            batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
+            conf_matrix_all += batch_conf_matrix
+
+            # sample id to uniquely id crops
+            sample_id = f"rank{rank}_batch{num_val_samples}_sample{b}"
+
+            # Visualize results
+            visualize_slices_2d(
+                raw_vol,
+                final_seg,
+                gt_vol,
+                job_config.model.num_classes,
+                f"{job_config.model.backbone}_val_sample_{sample_id}.gif"
+            )
+
+    # Reduce val loss
+    local_stats = torch.tensor([total_val_loss, num_val_samples], device='cuda', dtype=torch.float32)
+    local_stats = dist_sum(local_stats, dp_mesh)
+
+    global_total_loss = local_stats[0].item()
+    global_total_samples = local_stats[1].item()
+    avg_val_loss = global_total_loss / global_total_samples
+
+    # Reduce confusion matrix across ranks
+    conf_matrix_all = dist_sum(conf_matrix_all, dp_mesh)
+
+    # Log eval results and visualize some examples
+    if torch.distributed.get_rank() == 0:
+        # Mean IoU calculation
+        true_positive = torch.diag(conf_matrix_all)
+        rows_sum = conf_matrix_all.sum(dim=1) # Ground truth pixels per class
+        cols_sum = conf_matrix_all.sum(dim=0) # Predicted pixels per class
+        union = rows_sum + cols_sum - true_positive
+        
+        # Calculate IoU per class
+        iou_per_class = true_positive / (union + 1e-6)
+        
+        # Mean IoU (ignoring classes that don't exist in targets)
+        avg_miou = iou_per_class[rows_sum > 0].mean().item()
+
+    return avg_val_loss, avg_miou
