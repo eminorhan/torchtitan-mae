@@ -1,6 +1,7 @@
 import torch
+from pathlib import Path
 from .utils import dist_sum
-from .visualization import visualize_slices_2d, visualize_slices_3d
+from .visualization import visualize_slices
 
 def compute_pixel_accuracy(logits, targets):
     """
@@ -55,6 +56,10 @@ def evaluate_2d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
     total_val_loss = 0
     num_val_samples = 0
     conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
+
+    # create the gif dump directory if it doesn't exist
+    visuals_path = Path(job_config.job.dump_folder / "visuals")
+    visuals_path.mkdir(parents=True, exist_ok=True)
 
     # Stores accumulating 3D logits/probabilities
     # Key: sample_id -> Value: Tensor (Num_Classes, D, H, W)
@@ -133,12 +138,12 @@ def evaluate_2d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
         conf_matrix_all += batch_conf_matrix
 
         # Visualize results
-        visualize_slices_2d(
+        visualize_slices(
             raw_vol,
             final_seg,
             gt_vol,
             job_config.model.num_classes,
-            f"{job_config.model.backbone}_val_sample_{sample_id}.gif"
+            visuals_path / f"{job_config.model.backbone}_val_sample_{sample_id}.gif"
         )
 
     # Reduce val loss
@@ -171,6 +176,10 @@ def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
     total_val_loss = 0
     num_val_samples = 0
     conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
+
+    # create the gif dump directory if it doesn't exist
+    visuals_path = Path(job_config.job.dump_folder / "visuals")
+    visuals_path.mkdir(parents=True, exist_ok=True)
 
     rank = torch.distributed.get_rank()
 
@@ -205,12 +214,12 @@ def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
             sample_id = f"rank{rank}_batch{num_val_samples}_sample{b}"
 
             # Visualize results
-            visualize_slices_2d(
+            visualize_slices(
                 raw_vol,
                 final_seg,
                 gt_vol,
                 job_config.model.num_classes,
-                f"{job_config.model.backbone}_val_sample_{sample_id}.gif"
+                visuals_path / f"{job_config.model.backbone}_val_sample_{sample_id}.gif"
             )
 
     # Reduce val loss
