@@ -26,7 +26,7 @@ def compute_confusion_matrix(preds, targets, num_classes, ignore_index=None):
         preds: (D, H, W) - class predictions
         targets: (D, H, W) - ground truth labels
         num_classes: int
-        ignore_index: int (optional) - Label to ignore (e.g. 255 for void)
+        ignore_index: int (optional) - Label to ignore
     Returns:
         conf_matrix: (num_classes, num_classes) tensor on the same device
     """    
@@ -58,7 +58,7 @@ def evaluate_2d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
     conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
 
     # create the gif dump directory if it doesn't exist
-    visuals_path = Path(job_config.job.dump_folder / "visuals")
+    visuals_path = Path(job_config.job.dump_folder) / "visuals"
     visuals_path.mkdir(parents=True, exist_ok=True)
 
     # Stores accumulating 3D logits/probabilities
@@ -178,7 +178,7 @@ def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
     conf_matrix_all = torch.zeros((job_config.model.num_classes, job_config.model.num_classes), device='cuda')  # initialize a confusion matrix on GPU
 
     # create the gif dump directory if it doesn't exist
-    visuals_path = Path(job_config.job.dump_folder / "visuals")
+    visuals_path = Path(job_config.job.dump_folder) / "visuals"
     visuals_path.mkdir(parents=True, exist_ok=True)
 
     rank = torch.distributed.get_rank()
@@ -198,13 +198,15 @@ def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
         # iterate over the batch to obtain crop-wise (voumetric) predictions
         for b in range(val_preds.shape[0]):
             # Average the predictions & take argmax over classes
-            final_seg = torch.argmax(val_preds[b], dim=1)  # (D, H, W)
+            final_seg = torch.argmax(val_preds[b], dim=0)  # (D, H, W)
             
             # Retrieve the reconstructed 3D label
             gt_vol = val_targets[b] # (D, H, W)
 
             # Retrieve the raw inputs
-            raw_vol = val_inputs[b] # (D, H, W)
+            raw_vol = val_inputs[b, 0, :, :, :].detach().cpu()  # (D, H, W) this need not be on GPU
+
+            # print(f"val_preds/val_preds/val_targets/raw_vol/final_seg/gt_vol: {val_inputs.shape}/{val_preds.shape}/{val_targets.shape}/{raw_vol.shape}/{final_seg.shape}/{gt_vol.shape}")
 
             # mIoU
             batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
