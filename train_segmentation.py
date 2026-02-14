@@ -309,7 +309,7 @@ def main(job_config: JobConfig):
                 gpu_memory_monitor.reset_peak_stats()
 
             # ###### eval on val data & visualize results ######
-            if train_state.step % job_config.metrics.log_freq == 0:
+            if train_state.step % job_config.metrics.eval_freq == 0:
                 model.eval()
                 
                 with torch.no_grad():

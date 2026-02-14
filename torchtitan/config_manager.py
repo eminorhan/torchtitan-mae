@@ -69,7 +69,8 @@ class JobConfig:
         self.parser.add_argument("--profiling.save_memory_snapshot_folder", type=str, default="memory_snapshot", help="Memeory snapshot files location")
 
         # metrics configs
-        self.parser.add_argument("--metrics.log_freq", type=int, default=10, help="How often to log metrics to TensorBoard, in iterations")
+        self.parser.add_argument("--metrics.log_freq", type=int, default=10, help="How often to log training metrics to TensorBoard, in iterations")
+        self.parser.add_argument("--metrics.eval_freq", type=int, default=10, help="How often to evaluate model, in iterations")
         self.parser.add_argument("--metrics.enable_color_printing", default=False, action="store_true", help="Whether to enable color printing")
         self.parser.add_argument("--metrics.enable_tensorboard", action="store_true", help="Whether to log metrics to TensorBoard")
         self.parser.add_argument("--metrics.save_tb_folder", type=str, default="tb", help="Folder to dump TensorBoard states")
