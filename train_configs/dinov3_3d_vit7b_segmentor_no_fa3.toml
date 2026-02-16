@@ -1,0 +1,63 @@
+# torchtitan Config.toml
+
+[job]
+dump_folder = "./outputs/dinov3_vit7b16_3D_linear_no_fa3"
+description = "segmentation training"
+
+[profiling]
+enable_profiling = false
+save_traces_folder = "profile_trace"
+profile_freq = 10
+
+[metrics]
+log_freq = 10
+eval_freq = 1000
+enable_tensorboard = false
+save_tb_folder = "tb"
+
+[model]
+backbone = "dinov3_vit7b16_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16"] + 3D versions
+head = "linear"  # ["linear", "m2f"]
+dinov3_repo_folder = "/lustre/blizzard/stf218/scratch/emin/dinov3"
+num_classes = 64 
+crop_size = [400, 400, 400]
+val_crop_size = [400, 400, 400]
+use_fa3 = false  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
+
+[data]
+dataset_folder = "/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+augment = true  # whether to use "cheap" data augmentations
+
+[optimizer]
+name = "AdamW"
+lr = 3e-5
+
+[training]
+batch_size = 1
+warmup_steps = 100  # lr scheduler warm up
+max_norm = 1.0  # grad norm clipping
+steps = 10000  # number of training steps
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = -1
+tensor_parallel_degree = 1
+compile = false
+mixed_precision_param = "float32"
+
+[experimental]
+pipeline_parallel_degree = 1
+
+[checkpoint]
+enable_checkpoint = true
+folder = "checkpoint"
+interval_type = "steps"
+interval = 1000
+model_weights_only = false
+export_dtype = "bfloat16"
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
+
+[activation_checkpoint]
+mode = 'full'  # ['none', 'selective', 'full']
+selective_ac_option = 'op'  # 'int' = ac every positive int layer or 'op', ac based on ops policy
+
+[float8]
+enable_float8_linear = false
