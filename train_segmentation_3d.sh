@@ -6,10 +6,10 @@
 #SBATCH --cpus-per-task=288
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
-#SBATCH --time=1:00:00
+#SBATCH --time=4:00:00
 #SBATCH --job-name=train_segmentation_3d
 #SBATCH --output=train_segmentation_3d_%A_%a.out
-#SBATCH --array=0
+#SBATCH --array=0-9%1
 
 # activate venv
 source /lustre/blizzard/stf218/scratch/emin/blizzardvenv/bin/activate

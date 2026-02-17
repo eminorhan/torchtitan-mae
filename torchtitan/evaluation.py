@@ -134,7 +134,7 @@ def evaluate_2d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
         raw_vol = raw_inputs[sample_id] # (D, H, W)
 
         # mIoU
-        batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
+        batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes)
         conf_matrix_all += batch_conf_matrix
 
         # Visualize results
@@ -209,7 +209,7 @@ def evaluate_3d(model, val_loader, job_config, loss_fn, resample_fn, dp_mesh):
             # print(f"val_preds/val_preds/val_targets/raw_vol/final_seg/gt_vol: {val_inputs.shape}/{val_preds.shape}/{val_targets.shape}/{raw_vol.shape}/{final_seg.shape}/{gt_vol.shape}")
 
             # mIoU
-            batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes, ignore_index=0)
+            batch_conf_matrix = compute_confusion_matrix(final_seg, gt_vol, job_config.model.num_classes)
             conf_matrix_all += batch_conf_matrix
 
             # sample id to uniquely id crops
