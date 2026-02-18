@@ -5,6 +5,7 @@
 build
 outputs
 outputs_eval
+training_crops
 logs
 dist/*
 core
