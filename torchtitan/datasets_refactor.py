@@ -186,25 +186,17 @@ class ZarrTrainDataset3D(ZarrBaseDataset):
         target_shape = self.crop_size
 
         # --- Label Extraction ---
-        if all(os >= ts for os, ts in zip(original_shape, target_shape)):
-            start_voxels_label = [self.rng.integers(0, os - ts + 1) for os, ts in zip(original_shape, target_shape)]
-            slicing = tuple(slice(start, start + size) for start, size in zip(start_voxels_label, target_shape))
-            final_label_mask = label_array[slicing]
-            
-            offset_physical = [start * scale for start, scale in zip(start_voxels_label, label_scale)]
-            adjusted_label_translation = [orig + off for orig, off in zip(label_translation, offset_physical)]
-            adjusted_label_scale = label_scale
-        else:
-            label_data = label_array[:]
-            zoom_factor = [t / s for t, s in zip(target_shape, original_shape)]
-            resampled_label_mask = scipy.ndimage.zoom(label_data, zoom_factor, order=0, prefilter=False)
-            
-            final_label_mask = np.zeros(target_shape, dtype=resampled_label_mask.dtype)
-            slicing_for_copy = tuple(slice(0, min(fs, cs)) for fs, cs in zip(target_shape, resampled_label_mask.shape))
-            final_label_mask[slicing_for_copy] = resampled_label_mask[slicing_for_copy]
+        # NOTE: Resizing (up/down-sampling)
+        label_data = label_array[:]
+        zoom_factor = [t / s for t, s in zip(target_shape, original_shape)]
+        resampled_label_mask = scipy.ndimage.zoom(label_data, zoom_factor, order=0, prefilter=False)
+        
+        final_label_mask = np.zeros(target_shape, dtype=resampled_label_mask.dtype)
+        slicing_for_copy = tuple(slice(0, min(fs, cs)) for fs, cs in zip(target_shape, resampled_label_mask.shape))
+        final_label_mask[slicing_for_copy] = resampled_label_mask[slicing_for_copy]
 
-            adjusted_label_translation = label_translation
-            adjusted_label_scale = [ (sh * sc) / ts for sh, sc, ts in zip(original_shape, label_scale, target_shape)]
+        adjusted_label_translation = label_translation
+        adjusted_label_scale = [ (sh * sc) / ts for sh, sc, ts in zip(original_shape, label_scale, target_shape)]
 
         # --- Raw Extraction ---
         best_raw_array_path = os.path.join(raw_group_path, best_raw_scale_path)
@@ -300,22 +292,13 @@ class ZarrTrainDataset2D(ZarrBaseDataset):
         original_shape_2d = label_slice_2d.shape
         target_shape_2d = self.crop_size
         
-        if all(os >= ts for os, ts in zip(original_shape_2d, target_shape_2d)):
-            start_h = self.rng.integers(0, original_shape_2d[0] - target_shape_2d[0] + 1)
-            start_w = self.rng.integers(0, original_shape_2d[1] - target_shape_2d[1] + 1)
-            final_label_slice = label_slice_2d[start_h:start_h+target_shape_2d[0], start_w:start_w+target_shape_2d[1]]
-            
-            axes_2d = [i for i in range(3) if i != axis]
-            offset_physical = [start_h * label_scale_3d[axes_2d[0]], start_w * label_scale_3d[axes_2d[1]]]
-            adjusted_label_translation_2d = [label_translation_3d[axes_2d[0]] + offset_physical[0], label_translation_3d[axes_2d[1]] + offset_physical[1]]
-            adjusted_label_scale_2d = [label_scale_3d[axes_2d[0]], label_scale_3d[axes_2d[1]]]
-        else:
-            zoom_factor = [t / s for t, s in zip(target_shape_2d, original_shape_2d)]
-            final_label_slice = scipy.ndimage.zoom(label_slice_2d, zoom_factor, order=0, prefilter=False)
-            
-            axes_2d = [i for i in range(3) if i != axis]
-            adjusted_label_translation_2d = [label_translation_3d[axes_2d[0]], label_translation_3d[axes_2d[1]]]
-            adjusted_label_scale_2d = [(sh * label_scale_3d[d]) / ts for sh, d, ts in zip(original_shape_2d, axes_2d, target_shape_2d)]
+        # NOTE: Resizing (up/down-sampling)
+        zoom_factor = [t / s for t, s in zip(target_shape_2d, original_shape_2d)]
+        final_label_slice = scipy.ndimage.zoom(label_slice_2d, zoom_factor, order=0, prefilter=False)
+        
+        axes_2d = [i for i in range(3) if i != axis]
+        adjusted_label_translation_2d = [label_translation_3d[axes_2d[0]], label_translation_3d[axes_2d[1]]]
+        adjusted_label_scale_2d = [(sh * label_scale_3d[d]) / ts for sh, d, ts in zip(original_shape_2d, axes_2d, target_shape_2d)]
 
         # Fetch Raw 2D
         raw_attrs = zarr_root[sample_info['raw_path_group']].attrs.asdict()
@@ -493,7 +476,6 @@ class ZarrValidationDataset2D(ZarrBaseDataset):
 
             # --- ORTHOPLANE ITERATION ---
             # We iterate through axes 0 (Z), 1 (Y), and 2 (X)
-            
             # Using a global unique ID for the sample helps reconstruction (e.g., hash of path or simple index)
             sample_id = f"rank{self.rank}_sample{sample_idx}"
 

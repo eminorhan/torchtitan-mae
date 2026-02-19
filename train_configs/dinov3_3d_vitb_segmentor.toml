@@ -1,7 +1,7 @@
 # torchtitan Config.toml
 
 [job]
-dump_folder = "./outputs/dinov3_vith16plus_3D_linear"
+dump_folder = "./outputs/dinov3_vitb16_3D_linear"
 description = "segmentation training"
 
 [profiling]
@@ -10,30 +10,33 @@ save_traces_folder = "profile_trace"
 profile_freq = 10
 
 [metrics]
-log_freq = 1
+log_freq = 10
+eval_freq = 1000
 enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]
-backbone = "dinov3_vith16plus_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16"] + 3D versions
+backbone = "dinov3_vitb16_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16", "dinov3_vitb16"] + 3D versions
 head = "linear"  # ["linear", "m2f"]
-dinov3_repo_folder = "/lustre/gale/stf218/scratch/emin/dinov3"
-backbone_pretrained = true
+dinov3_repo_folder = "/lustre/blizzard/stf218/scratch/emin/dinov3"
 num_classes = 64 
-crop_size = [432, 432, 432]
+crop_size = [448, 448, 448]
+val_crop_size = [448, 448, 448]
+use_fa3 = true  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
 
 [data]
-dataset_folder = "/lustre/gale/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+dataset_folder = "/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+augment = true  # whether to use "cheap" data augmentations
 
 [optimizer]
 name = "AdamW"
-lr = 3e-5
+lr = 3e-4
 
 [training]
-batch_size = 1
-warmup_steps = 900  # lr scheduler warm up
+batch_size = 2
+warmup_steps = 100  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
-steps = 90000  # number of training steps
+steps = 2000  # number of training steps
 data_parallel_replicate_degree = 1
 data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
@@ -46,10 +49,10 @@ pipeline_parallel_degree = 1
 enable_checkpoint = true
 folder = "checkpoint"
 interval_type = "steps"
-interval = 10000
+interval = 1000
 model_weights_only = false
 export_dtype = "bfloat16"
-async_mode = "async"  # ["disabled", "async", "async_with_pinned_mem"]
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
 
 [activation_checkpoint]
 mode = 'full'  # ['none', 'selective', 'full']
