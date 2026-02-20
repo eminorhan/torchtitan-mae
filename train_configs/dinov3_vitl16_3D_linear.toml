@@ -1,7 +1,7 @@
 # torchtitan Config.toml
 
 [job]
-dump_folder = "./outputs/dinov3_vitl16_linear"
+dump_folder = "./outputs/dinov3_vitl16_3D_linear"
 description = "segmentation training"
 
 [profiling]
@@ -11,15 +11,17 @@ profile_freq = 10
 
 [metrics]
 log_freq = 100
+eval_freq = 100
 enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]
-backbone = "dinov3_vitl16"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16"] + 3D versions
+backbone = "dinov3_vitl16_3D"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16", "dinov3_vitb16"] + 3D versions
 head = "linear"  # ["linear", "m2f"]
 dinov3_repo_folder = "/lustre/blizzard/stf218/scratch/emin/dinov3"
 num_classes = 64 
-crop_size = [1024, 1024]
+crop_size = [480, 480, 480]
+val_crop_size = [480, 480, 480]
 use_fa3 = true  # use FlashAttention-3? NOTE: FA-3 requires bf16 mixed precision 
 
 [data]
@@ -28,11 +30,11 @@ augment = true  # whether to use "cheap" data augmentations
 
 [optimizer]
 name = "AdamW"
-lr = 3e-5
+lr = 3e-4
 
 [training]
-batch_size = 16
-warmup_steps = 200  # lr scheduler warm up
+batch_size = 1
+warmup_steps = 100  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
 steps = 2000  # number of training steps
 data_parallel_replicate_degree = 1

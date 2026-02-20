@@ -112,6 +112,7 @@ def generate_2d_slices(root_dir):
                 # 3. Yield 2D slices along Z, Y, and X
                 
                 full_crop_name = f"{dataset_name}/{recon_name}/{crop_name}"
+                # print(f"full crop name: {full_crop_name}")
 
                 for axis in [0, 1, 2]:
                     num_slices = raw_crop_3d.shape[axis]

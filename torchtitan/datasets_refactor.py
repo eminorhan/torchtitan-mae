@@ -186,7 +186,7 @@ class ZarrTrainDataset3D(ZarrBaseDataset):
         target_shape = self.crop_size
 
         # --- Label Extraction ---
-        # NOTE: Resizing (up/down-sampling)
+        # NOTE: Resizing only (up/down-sampling)
         label_data = label_array[:]
         zoom_factor = [t / s for t, s in zip(target_shape, original_shape)]
         resampled_label_mask = scipy.ndimage.zoom(label_data, zoom_factor, order=0, prefilter=False)
@@ -288,11 +288,10 @@ class ZarrTrainDataset2D(ZarrBaseDataset):
         label_attrs = zarr_root[os.path.dirname(sample_info['label_path'])].attrs.asdict()
         label_scale_3d, label_translation_3d = self._parse_ome_ngff_metadata(label_attrs, os.path.basename(sample_info['label_path']))
         
-        # Crop/Resize 2D Label
         original_shape_2d = label_slice_2d.shape
         target_shape_2d = self.crop_size
         
-        # NOTE: Resizing (up/down-sampling)
+        # NOTE: Resizing only (up/down-sampling)
         zoom_factor = [t / s for t, s in zip(target_shape_2d, original_shape_2d)]
         final_label_slice = scipy.ndimage.zoom(label_slice_2d, zoom_factor, order=0, prefilter=False)
         
