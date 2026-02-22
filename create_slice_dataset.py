@@ -108,12 +108,11 @@ def generate_2d_slices(root_dir):
                 
                 if raw_crop_3d.size == 0:
                     continue
-
-                # 3. Yield 2D slices along Z, Y, and X
                 
                 full_crop_name = f"{dataset_name}/{recon_name}/{crop_name}"
                 # print(f"full crop name: {full_crop_name}")
-
+                
+                # 3. Yield 2D slices along Z, Y, and X
                 for axis in [0, 1, 2]:
                     num_slices = raw_crop_3d.shape[axis]
                     
@@ -149,17 +148,16 @@ def main():
     print("Initializing dataset generation. This may take a while depending on data size...")
     
     # Create the dataset using the generator
-    dataset = Dataset.from_generator(
-        generate_2d_slices,
-        gen_kwargs={"root_dir": root_directory},
-        features=features
-    )
-
-    print(f"Dataset generated with {len(dataset)} slices. Uploading to Hub...")
+    dataset = Dataset.from_generator(generate_2d_slices, gen_kwargs={"root_dir": root_directory}, features=features)
+    print(f"Dataset generated with {len(dataset)} slices.")
     
-    # Push directly to Hugging Face
-    dataset.push_to_hub(repo_id)  # max_shard_size="1GB"?
-    print("Upload complete!")
+    # Shuffle the dataset to evenly distribute large/small images across shards
+    dataset = dataset.shuffle(seed=42)
+    print("Dataset shuffled!")
+
+    # Push the dataset directly to Hugging Face with shard size limit
+    dataset.push_to_hub(repo_id, max_shard_size="1GB")
+    print("Dataset uploaded to HF Hub!")
 
 if __name__ == "__main__":
     main()
