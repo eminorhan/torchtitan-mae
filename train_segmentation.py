@@ -8,10 +8,10 @@ import contextlib
 import os
 import time
 from datetime import timedelta
-
 import torch
 from torch.distributed.elastic.multiprocessing.errors import record
 
+# torchtitan imports
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
@@ -26,6 +26,7 @@ from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_prof
 from torchtitan.evaluation import evaluate_2d, evaluate_3d
 from torchvision.utils import save_image
 
+# dino imports
 from dinov3.eval.segmentation.models import build_segmentation_decoder
 
 
@@ -295,13 +296,14 @@ def main(job_config: JobConfig):
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
-                logger.info(
-                    f"{color.cyan}step: {train_state.step:2}  "
-                    f"{color.green}loss: {global_avg_loss:7.4f}  "
-                    f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
-                    f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
-                    f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
-                )
+                if torch.distributed.get_rank() == 0:    
+                    logger.info(
+                        f"{color.cyan}step: {train_state.step:2}  "
+                        f"{color.green}loss: {global_avg_loss:7.4f}  "
+                        f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
+                        f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
+                        f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
+                    )
 
                 losses_since_last_log.clear()
                 data_loading_times.clear()
@@ -315,10 +317,19 @@ def main(job_config: JobConfig):
                 with torch.no_grad():
                     avg_val_loss, avg_miou = eval_fn(model, val_loader, job_config, loss_fn, resample_preds, dp_mesh)
 
-                if torch.distributed.get_rank() == 0:    
-                    logger.info(f"--- Validation at step {train_state.step} ---")
-                    logger.info(f"Average validation loss = {avg_val_loss:.4f}")
-                    logger.info(f"Mean IoU = {avg_miou:.4f}")
+                if torch.distributed.get_rank() == 0:
+                    logger.info(
+                        f"{color.cyan}step: {train_state.step:2}  "
+                        f"{color.green}val loss: {avg_val_loss:.4f}  "
+                        f"{color.red}mean IoU: {avg_miou:.4f}  "
+                    )
+                    
+                    # log val metrics to tb
+                    val_metrics = {
+                        "val_metrics/avg_loss": avg_val_loss,
+                        "val_metrics/miou": avg_miou,
+                    }
+                    metric_logger.log(val_metrics, step=train_state.step)
 
                 model.train()
             # ###### end eval & visualize ######

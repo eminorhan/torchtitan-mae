@@ -6,13 +6,13 @@ def test_load_cellmap_2d():
 
     repo_id = "eminorhan/cellmap-2d"
     
-    print(f"Attempting to load '{repo_id}' in streaming mode...")
+    print(f"Attempting to load '{repo_id}' ...")
     
     # Use streaming=True to avoid downloading the entire dataset just for a test
     ds = load_dataset(repo_id, split="train", num_proc=64)
 
-    for i in range(len(ds)):
-        print(f"Row {i}: crop name {ds[i]['crop_name']}, image shape {ds[i]['image'].size}, axis {ds[i]['axis']}, slice {ds[i]['slice']}")
+    # for i in range(len(ds)):
+    #     print(f"Row {i}: crop name {ds[i]['crop_name']}, image shape {ds[i]['image'].size}, axis {ds[i]['axis']}, slice {ds[i]['slice']}")
 
     # # Fetch the very first sample from the generator
     # first_item = next(iter(dataset))
