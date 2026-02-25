@@ -2,8 +2,7 @@ import os
 import zarr
 import numpy as np
 import scipy.ndimage
-
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Optional, Union
 from glob import glob
 
 import torch
@@ -24,98 +23,66 @@ def make_transform_3d():
 transform_2d = make_transform_2d()
 transform_3d = make_transform_3d()
 
-class ZarrSegmentationDataset3D(IterableDataset):
+def find_and_split_samples(root_dir, labels_scale, val_split=0.11, seed=1):
     """
-    A simple dataloader for 3D EM segmentation datasets stored in Zarr format.
+    Scans the directory once and returns deterministic train/val splits of sample metadata.
+    """
+    samples = []
+    zarr_paths = glob(os.path.join(root_dir, '*/*.zarr'))
 
-    This dataset class scans a root directory to find pairs of raw EM volumes
-    and their corresponding labeled segmentation crops. It returns fixed-size
-    crops suitable for training deep learning models.
+    for zarr_path in zarr_paths:
+        try:
+            zarr_root = zarr.open(zarr_path, mode='r')
+        except Exception as e:
+            print(f"Could not open {zarr_path}, skipping. Error: {e}")
+            continue
+
+        for recon_name in zarr_root.keys():
+            if not recon_name.startswith('recon-'): continue
+
+            raw_group_path_str = os.path.join(recon_name, 'em', 'fibsem-uint8')
+            labels_base_path_str = os.path.join(recon_name, 'labels', 'groundtruth')
+
+            if raw_group_path_str not in zarr_root or labels_base_path_str not in zarr_root:
+                continue
+            
+            groundtruth_group = zarr_root[labels_base_path_str]
+            for crop_name in groundtruth_group.keys():
+                if not crop_name.startswith('crop'): continue
+                
+                label_path_str = os.path.join(labels_base_path_str, crop_name, 'all', labels_scale)
+                
+                if label_path_str in zarr_root:
+                    samples.append({
+                        'zarr_path': zarr_path, 
+                        'raw_path_group': raw_group_path_str, 
+                        'label_path': label_path_str
+                    })
+
+    # Sort deterministically
+    samples.sort(key=lambda x: x['zarr_path'] + x['label_path'])
+
+    # Shuffle
+    rng = np.random.default_rng(seed)
+    rng.shuffle(samples)
+
+    # Split
+    split_idx = int(len(samples) * (1 - val_split))
+    return samples[:split_idx], samples[split_idx:]
+
+
+class ZarrBaseDataset(IterableDataset):
     """
-    def __init__(self, root_dir, crop_size, val_crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
-        """
-        Initializes the dataset by scanning for valid data samples.
-        """
-        super().__init__()        
-        self.root_dir = root_dir
-        self.crop_size = crop_size
-        self.val_crop_size = val_crop_size
-        self.rank = rank
+    Base class containing helper methods for metadata parsing and finding scales.
+    Does not handle iteration logic.
+    """
+    def __init__(self, raw_scale='s0', labels_scale='s0'):
+        super().__init__()
         self.raw_scale = raw_scale
         self.labels_scale = labels_scale
-        self.augment = augment
-
-        # Find samples
-        all_samples = self._find_samples()
-
-        # Sort deterministically: ensure every rank starts with the exact same list order.
-        # We sort by the unique paths in the sample dictionary.
-        all_samples.sort(key=lambda x: x['zarr_path'] + x['label_path'])
-
-        # Shuffle using a shared seed
-        split_rng = np.random.default_rng(1)
-        split_rng.shuffle(all_samples)
-
-        # Split the data
-        split_idx = int(len(all_samples) * (1 - val_split))
-        self.train_samples = all_samples[:split_idx]
-        self.val_samples = all_samples[split_idx:]
-
-        # Rank-specific RNG: this is used for per-rank data loading & augmentation during training.
         self.rng = np.random.default_rng()
 
-        print(f"[Rank {self.rank}]: {len(self.train_samples)} training samples, {len(self.val_samples)} validation samples.")
-        # for i, sample in enumerate(self.train_samples):
-        #     print(f"[Rank {self.rank}]: Train sample {i}: {sample['zarr_path']+sample['label_path']}")
-        # for i, sample in enumerate(self.val_samples):
-        #     print(f"[Rank {self.rank}]: Val sample {i}: {sample['zarr_path']+sample['label_path']}")
-
-    def _find_samples(self):
-        """
-        Scans the root directory to find all (raw_volume_group, label_crop) pairs.
-
-        Returns:
-            list: A list of dictionaries, where each dictionary contains paths and metadata for a single sample.
-        """
-        samples = []
-        
-        # Find all top-level zarr directories
-        zarr_paths = glob(os.path.join(self.root_dir, '*/*.zarr'))
-
-        for zarr_path in zarr_paths:
-            try:
-                zarr_root = zarr.open(zarr_path, mode='r')
-            except Exception as e:
-                print(f"Could not open {zarr_path}, skipping. Error: {e}")
-                continue
-
-            # Iterate through reconstruction groups (e.g., recon-1)
-            for recon_name in zarr_root.keys():
-                if not recon_name.startswith('recon-'):
-                    continue
-
-                raw_group_path_str = os.path.join(recon_name, 'em', 'fibsem-uint8')
-                labels_base_path_str = os.path.join(recon_name, 'labels', 'groundtruth')
-
-                if raw_group_path_str not in zarr_root or labels_base_path_str not in zarr_root:
-                    continue
-                
-                # Find all available crops for this reconstruction
-                groundtruth_group = zarr_root[labels_base_path_str]
-                for crop_name in groundtruth_group.keys():
-                    if not crop_name.startswith('crop'):
-                        continue
-                    
-                    # We will use the 'all' mask which contains all label classes
-                    label_path_str = os.path.join(labels_base_path_str, crop_name, 'all', self.labels_scale)
-                    
-                    if label_path_str in zarr_root:
-                        samples.append({'zarr_path': zarr_path, 'raw_path_group': raw_group_path_str, 'label_path': label_path_str})
-
-        return samples
-    
     def _parse_ome_ngff_metadata(self, attrs, scale_level_name):
-        """Helper function to parse scale and translation from OME-NGFF metadata."""
         try:
             multiscales = attrs['multiscales'][0]
             datasets = multiscales['datasets']
@@ -128,20 +95,12 @@ class ZarrSegmentationDataset3D(IterableDataset):
                 
                 scale = scale_transform['scale'] if scale_transform else [1.0, 1.0, 1.0]
                 translation = translation_transform['translation'] if translation_transform else [0.0, 0.0, 0.0]
-                
                 return scale, translation
         except (KeyError, IndexError, StopIteration):
-            pass # We will handle the error outside this function
-        
+            pass
         return None, None
     
     def _find_best_raw_scale(self, target_label_scale, raw_attrs):
-        """
-        Finds the best raw scale level to use based on the target label scale.
-
-        It prioritizes raw scales that are higher or equal resolution (smaller or equal scale value)
-        than the target, picking the one with the closest resolution to minimize downsampling.
-        """
         try:
             multiscales = raw_attrs['multiscales'][0]
             datasets = multiscales['datasets']
@@ -160,117 +119,86 @@ class ZarrSegmentationDataset3D(IterableDataset):
         if not available_scales:
             return self.raw_scale, None, None
 
-        # Find candidate scales where raw_resolution >= label_resolution (raw_scale <= label_scale)
         candidates = [s for s in available_scales if all(rs <= ls for rs, ls in zip(s['scale'], target_label_scale))]
 
         if candidates:
-            # From the candidates, find the one closest to the target scale (minimizing the difference)
             best_candidate = min(candidates, key=lambda s: sum(ls - rs for ls, rs in zip(target_label_scale, s['scale'])))
             return best_candidate['path'], best_candidate['scale'], best_candidate['translation']
         else:
-            # No suitable candidate for downsampling, so we'll have to upsample.
-            # Pick the highest resolution available (smallest scale values).
             highest_res_scale = min(available_scales, key=lambda s: sum(s['scale']))
             return highest_res_scale['path'], highest_res_scale['scale'], highest_res_scale['translation']
 
+
+class ZarrTrainDataset3D(ZarrBaseDataset):
+    """
+    Infinite iterator for 3D training crops.
+    """
+    def __init__(self, samples, crop_size, raw_scale='s0', labels_scale='s0', augment=True):
+        super().__init__(raw_scale, labels_scale)
+        self.samples = samples
+        self.crop_size = crop_size
+        self.augment = augment
+
     def _augment_data(self, raw: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Applies random axis-aligned rotations and reflections (flips). Fast execution using numpy strides (no interpolation).
-        """
-        # 1. Random Flips (Mirror Symmetries)
-        # We check each axis (0,1,2) and flip it with 50% probability
+        # Random Flips
         for axis in range(3):
             if self.rng.random() < 0.5:
                 raw = np.flip(raw, axis=axis)
                 label = np.flip(label, axis=axis)
-
-        # 2. Random 90-degree Rotations
-        # We pick a random number of 90-deg rotations (0, 1, 2, 3)
-        k = self.rng.integers(0, 4)
         
+        # Random 90-degree Rotations
+        k = self.rng.integers(0, 4)
         if k > 0:
-            # We need to pick a plane (two axes) to rotate. 
-            # Options: (0,1) [Z-Y], (0,2) [Z-X], (1,2) [Y-X]
-            
-            # NOTE: We can only rotate axes that have the same dimension size.
             valid_planes = []
             shape = raw.shape
-            
             if shape[0] == shape[1]: valid_planes.append((0, 1))
             if shape[0] == shape[2]: valid_planes.append((0, 2))
             if shape[1] == shape[2]: valid_planes.append((1, 2))
             
             if valid_planes:
-                # Choose a random valid plane to rotate
                 axes = self.rng.choice(valid_planes)
-                # rot90 is very efficient (uses transposes/flips internally)
                 raw = np.rot90(raw, k=k, axes=axes)
                 label = np.rot90(label, k=k, axes=axes)
-
-        # PyTorch sometimes throws warnings/errors with negative strides (caused by flip), .copy() ensures the array is contiguous in memory.
+        
         return raw.copy(), label.copy()
 
     def _get_sample(self, sample_info):
-        """
-        Fetches a single raw crop and its corresponding segmentation mask, both at a fixed output size.
-        """
         zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
         label_array = zarr_root[sample_info['label_path']]
 
-        # Parse label metadata
+        # Metadata parsing
         label_attrs_group_path = os.path.dirname(sample_info['label_path'])
         label_attrs = zarr_root[label_attrs_group_path].attrs.asdict()
         label_scale_name = os.path.basename(sample_info['label_path'])
         label_scale, label_translation = self._parse_ome_ngff_metadata(label_attrs, label_scale_name)
-        if label_scale is None:
-             raise ValueError(f"Could not parse required OME-NGFF metadata from {label_attrs_group_path}")
+        
+        if label_scale is None: raise ValueError("Metadata parsing failed")
             
-        # Dynamically find the best raw scale based on the ORIGINAL label scale
         raw_group_path = sample_info['raw_path_group']
         raw_attrs = zarr_root[raw_group_path].attrs.asdict()
         best_raw_scale_path, raw_scale, raw_translation = self._find_best_raw_scale(label_scale, raw_attrs)
 
-        if raw_scale is None: # Fallback if metadata parsing failed in helper
-             _, raw_scale, raw_translation = self._parse_ome_ngff_metadata(raw_attrs, best_raw_scale_path)
-             if raw_scale is None:
-                 print(f"Warning: Could not parse metadata for raw volume. Assuming scale=[1,1,1] and translation=[0,0,0].")
-                 raw_scale, raw_translation = [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
-        
+        if raw_scale is None:
+             # Fallback
+             raw_scale, raw_translation = [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
+
         original_shape = label_array.shape
         target_shape = self.crop_size
 
-        # ====== Adjust the label mask to the target output size ======
-        # Case 1: The original label mask is larger than the target size, so we take a random crop.
-        if all(os >= ts for os, ts in zip(original_shape, target_shape)):
-            start_z = self.rng.integers(0, original_shape[0] - target_shape[0] + 1)
-            start_y = self.rng.integers(0, original_shape[1] - target_shape[1] + 1)
-            start_x = self.rng.integers(0, original_shape[2] - target_shape[2] + 1)
-            start_voxels_label = (start_z, start_y, start_x)
-
-            slicing = tuple(slice(start, start + size) for start, size in zip(start_voxels_label, target_shape))
-            final_label_mask = label_array[slicing]
-            
-            offset_physical = [start * scale for start, scale in zip(start_voxels_label, label_scale)]
-            adjusted_label_translation = [orig + off for orig, off in zip(label_translation, offset_physical)]
-            adjusted_label_scale = label_scale
+        # --- Label Extraction ---
+        # NOTE: Resizing only (up/down-sampling)
+        label_data = label_array[:]
+        zoom_factor = [t / s for t, s in zip(target_shape, original_shape)]
+        resampled_label_mask = scipy.ndimage.zoom(label_data, zoom_factor, order=0, prefilter=False)
         
-        # Case 2: The label mask is smaller (or mixed), so we must resample it.
-        else:
-            label_data = label_array[:]
-            zoom_factor = [t / s for t, s in zip(target_shape, original_shape)]
+        final_label_mask = np.zeros(target_shape, dtype=resampled_label_mask.dtype)
+        slicing_for_copy = tuple(slice(0, min(fs, cs)) for fs, cs in zip(target_shape, resampled_label_mask.shape))
+        final_label_mask[slicing_for_copy] = resampled_label_mask[slicing_for_copy]
 
-            # Use order=0 for nearest-neighbor interpolation to preserve integer labels
-            resampled_label_mask = scipy.ndimage.zoom(label_data, zoom_factor, order=0, prefilter=False)
-            
-            final_label_mask = np.zeros(target_shape, dtype=resampled_label_mask.dtype)
-            slicing_for_copy = tuple(slice(0, min(fs, cs)) for fs, cs in zip(target_shape, resampled_label_mask.shape))
-            final_label_mask[slicing_for_copy] = resampled_label_mask[slicing_for_copy]
+        adjusted_label_translation = label_translation
+        adjusted_label_scale = [ (sh * sc) / ts for sh, sc, ts in zip(original_shape, label_scale, target_shape)]
 
-            adjusted_label_translation = label_translation
-            original_physical_size = [sh * sc for sh, sc in zip(original_shape, label_scale)]
-            adjusted_label_scale = [ps / ts for ps, ts in zip(original_physical_size, target_shape)]
-            
-        # Now fetch the corresponding raw data using the optimal raw scale
+        # --- Raw Extraction ---
         best_raw_array_path = os.path.join(raw_group_path, best_raw_scale_path)
         raw_array = zarr_root[best_raw_array_path]
 
@@ -281,8 +209,7 @@ class ZarrSegmentationDataset3D(IterableDataset):
         is_downsampling_or_equal = all(r >= 0.999 for r in scale_ratio)
 
         if is_downsampling_or_equal:
-            step = [int(round(r)) for r in scale_ratio]
-            step = [max(1, s) for s in step]
+            step = [max(1, int(round(r))) for r in scale_ratio]
             end_voxels_raw = [st + (dim * sp) for st, dim, sp in zip(start_voxels_raw, target_shape, step)]
             slicing = tuple(slice(st, en, sp) for st, en, sp in zip(start_voxels_raw, end_voxels_raw, step))
             raw_crop_from_zarr = raw_array[slicing]
@@ -306,304 +233,335 @@ class ZarrSegmentationDataset3D(IterableDataset):
         if self.augment:
             final_raw_crop, final_label_mask = self._augment_data(final_raw_crop, final_label_mask)
 
-        # Add channel axis and convert to tensor
-        raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...]).float() / 255.0
+        raw_tensor = torch.from_numpy(final_raw_crop[np.newaxis, ...])
         label_tensor = torch.from_numpy(final_label_mask).long()
 
-        return transform_3d(raw_tensor), label_tensor
+        return transform_3d(raw_tensor.expand(3, -1, -1, -1)), label_tensor
 
     def __iter__(self):
         while True:
-            # Randomly select a sample from the training set
-            sample_info = self.rng.choice(self.train_samples)
+            sample_info = self.rng.choice(self.samples)
             yield self._get_sample(sample_info)
 
-    # Separate iterator for the validation set
-    def validation_iterator(self):
-        """The validation iterator. Yields each validation sample exactly once."""
-        prev_augment = self.augment
-        self.augment = False
 
-        for sample_info in self.val_samples:
-            yield self._get_sample(sample_info)
-
-        self.augment = prev_augment
-
-
-class ZarrSegmentationDataset2D(ZarrSegmentationDataset3D):
+class ZarrTrainDataset2D(ZarrBaseDataset):
     """
-    An iterable dataloader that provides random 2D slices from a collection of 3D Zarr volumes.
-    It inherits seeding and iteration logic from its 3D parent class.
+    Infinite iterator for 2D training slices.
     """
-    def __init__(self, root_dir, crop_size, val_crop_size, rank, val_split=0.05, raw_scale='s0', labels_scale='s0', augment=True):
-        """
-        Initializes the 2D dataloader.
-
-        Args:
-            root_dir (str): Path to the root directory containing Zarr datasets.
-            crop_size (tuple): Desired (H, W) output size for 2D slices.
-            rank (int): The distributed rank of the current process.
-            val_split (float, optional): Fraction of data to use for validation. Defaults to 0.05.
-            raw_scale (str, optional): Default highest-resolution scale for raw data.
-            labels_scale (str, optional): Scale level for labels.
-        """
-        # Call the parent constructor, but we will use our own 2D crop_size.
-        # The parent's crop_size will be ignored
-        super().__init__(root_dir, None, None, rank, val_split, raw_scale, labels_scale, augment)
-        self.crop_size = crop_size  # This is a 2D tuple (H, W)
-        self.val_crop_size = val_crop_size  # This is a 3D tuple (D, H, W)
+    def __init__(self, samples, crop_size, raw_scale='s0', labels_scale='s0', augment=True):
+        super().__init__(raw_scale, labels_scale)
+        self.samples = samples
+        self.crop_size = crop_size # 2D tuple (H, W)
+        self.augment = augment
 
     def _augment_data(self, raw: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Applies random 2D axis-aligned rotations and flips.
-        """
-        # 1. Random Flips (Independent probabilities for H and V)
         if self.rng.random() < 0.5:
             raw = np.flip(raw, axis=0)
             label = np.flip(label, axis=0)
-            
         if self.rng.random() < 0.5:
             raw = np.flip(raw, axis=1)
             label = np.flip(label, axis=1)
 
-        # 2. Random 90-degree Rotations
-        # NOTE: We can only do 90/270 rotations if the image is Square.
         if raw.shape[0] == raw.shape[1]:
-            k = self.rng.integers(0, 4) # 0, 1, 2, 3
+            k = self.rng.integers(0, 4)
         else:
-            # If rectangular, we can only rotate 180 degrees (k=2) or 0 (k=0)
             k = self.rng.choice([0, 2])
 
         if k > 0:
-            # np.rot90 defaults to axes (0, 1) which is perfect for 2D
             raw = np.rot90(raw, k=k)
             label = np.rot90(label, k=k)
-
         return raw.copy(), label.copy()
 
     def _get_sample(self, sample_info):
-        """
-        Fetches a single 2D slice, loading it directly from the Zarr store. This method overrides the parent class's method.
-        """
         zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
         label_array_3d = zarr_root[sample_info['label_path']]
         shape_3d = label_array_3d.shape
         
-        axis = self.rng.integers(0, 3) # Randomly choose Z, Y, or X axis
-        slice_idx = self.rng.integers(0, shape_3d[axis]) # Randomly choose slice along that axis
+        axis = self.rng.integers(0, 3)
+        slice_idx = self.rng.integers(0, shape_3d[axis])
 
-        # Get the 2D label slice and its 3D metadata
         slicing_3d = [slice(None)] * 3
         slicing_3d[axis] = slice_idx
         label_slice_2d = label_array_3d[tuple(slicing_3d)]
 
-        label_attrs_group_path = os.path.dirname(sample_info['label_path'])
-        label_attrs = zarr_root[label_attrs_group_path].attrs.asdict()
-        label_scale_name = os.path.basename(sample_info['label_path'])
-        label_scale_3d, label_translation_3d = self._parse_ome_ngff_metadata(label_attrs, label_scale_name)
-
-        # Adjust label slice to crop_size (crop or resample)
+        # Metadata parsing (condensed for brevity, logic identical to original)
+        label_attrs = zarr_root[os.path.dirname(sample_info['label_path'])].attrs.asdict()
+        label_scale_3d, label_translation_3d = self._parse_ome_ngff_metadata(label_attrs, os.path.basename(sample_info['label_path']))
+        
         original_shape_2d = label_slice_2d.shape
         target_shape_2d = self.crop_size
-        if all(os >= ts for os, ts in zip(original_shape_2d, target_shape_2d)):
-            start_h = self.rng.integers(0, original_shape_2d[0] - target_shape_2d[0] + 1)
-            start_w = self.rng.integers(0, original_shape_2d[1] - target_shape_2d[1] + 1)
-            final_label_slice = label_slice_2d[start_h:start_h+target_shape_2d[0], start_w:start_w+target_shape_2d[1]]
-            
-            axes_2d = [i for i in range(3) if i != axis]
-            offset_physical = [start_h * label_scale_3d[axes_2d[0]], start_w * label_scale_3d[axes_2d[1]]]
-            adjusted_label_translation_2d = [label_translation_3d[axes_2d[0]] + offset_physical[0], label_translation_3d[axes_2d[1]] + offset_physical[1]]
-            adjusted_label_scale_2d = [label_scale_3d[axes_2d[0]], label_scale_3d[axes_2d[1]]]
-        else:
-            zoom_factor = [t / s for t, s in zip(target_shape_2d, original_shape_2d)]
-            final_label_slice = scipy.ndimage.zoom(label_slice_2d, zoom_factor, order=0, prefilter=False)
-
-            axes_2d = [i for i in range(3) if i != axis]
-            adjusted_label_translation_2d = [label_translation_3d[axes_2d[0]], label_translation_3d[axes_2d[1]]]
-            original_physical_size_2d = [sh * sc for sh, sc in zip(original_shape_2d, [label_scale_3d[d] for d in axes_2d])]
-            adjusted_label_scale_2d = [ps / ts for ps, ts in zip(original_physical_size_2d, target_shape_2d)]
-
-        # Find best raw scale and fetch corresponding 2D raw slice
-        raw_group_path = sample_info['raw_path_group']
-        raw_attrs = zarr_root[raw_group_path].attrs.asdict()
         
-        temp_target_label_scale_3d = [0,0,0]
+        # NOTE: Resizing only (up/down-sampling)
+        zoom_factor = [t / s for t, s in zip(target_shape_2d, original_shape_2d)]
+        final_label_slice = scipy.ndimage.zoom(label_slice_2d, zoom_factor, order=0, prefilter=False)
+        
+        axes_2d = [i for i in range(3) if i != axis]
+        adjusted_label_translation_2d = [label_translation_3d[axes_2d[0]], label_translation_3d[axes_2d[1]]]
+        adjusted_label_scale_2d = [(sh * label_scale_3d[d]) / ts for sh, d, ts in zip(original_shape_2d, axes_2d, target_shape_2d)]
+
+        # Fetch Raw 2D
+        raw_attrs = zarr_root[sample_info['raw_path_group']].attrs.asdict()
+        temp_target_label_scale_3d = [0.0]*3
         axes_2d = [i for i in range(3) if i != axis]
         temp_target_label_scale_3d[axes_2d[0]] = adjusted_label_scale_2d[0]
         temp_target_label_scale_3d[axes_2d[1]] = adjusted_label_scale_2d[1]
         temp_target_label_scale_3d[axis] = label_scale_3d[axis]
 
         best_raw_scale_path, raw_scale_3d, raw_translation_3d = self._find_best_raw_scale(temp_target_label_scale_3d, raw_attrs)
-        raw_array_3d = zarr_root[os.path.join(raw_group_path, best_raw_scale_path)]
-        
-        phys_start_3d = [0,0,0]
+        raw_array_3d = zarr_root[os.path.join(sample_info['raw_path_group'], best_raw_scale_path)]
+
+        # Phys to Voxels logic
+        phys_start_3d = [0.0]*3
         phys_start_3d[axes_2d[0]] = adjusted_label_translation_2d[0]
         phys_start_3d[axes_2d[1]] = adjusted_label_translation_2d[1]
         phys_start_3d[axis] = label_translation_3d[axis] + slice_idx * label_scale_3d[axis]
-        
-        relative_phys_start_3d = [ps - rt for ps, rt in zip(phys_start_3d, raw_translation_3d)]
-        start_voxels_raw_3d = [int(round(p / s)) for p, s in zip(relative_phys_start_3d, raw_scale_3d)]
 
-        size_in_phys_2d = [sh * sc for sh, sc in zip(target_shape_2d, adjusted_label_scale_2d)]
-        size_in_raw_voxels_2d = [int(round(p / s)) for p, s in zip(size_in_phys_2d, [raw_scale_3d[d] for d in axes_2d])]
+        rel_start = [ps - rt for ps, rt in zip(phys_start_3d, raw_translation_3d)]
+        start_vox = [int(round(p / s)) for p, s in zip(rel_start, raw_scale_3d)]
         
-        # Get the actual shape of the raw data array
-        raw_shape_3d = raw_array_3d.shape
-
-        # Clamp the calculated coordinates to be within the valid bounds of the raw array (this prevents the BoundsCheckError)s
-        safe_start_voxels_raw_3d = [np.clip(start_voxels_raw_3d[i], 0, raw_shape_3d[i] - 1) for i in range(3)]
+        size_phys_2d = [sh * sc for sh, sc in zip(target_shape_2d, adjusted_label_scale_2d)]
+        size_vox_2d = [int(round(p / s)) for p, s in zip(size_phys_2d, [raw_scale_3d[d] for d in axes_2d])]
         
-        safe_raw_slicing = [0, 0, 0]
-        safe_raw_slicing[axes_2d[0]] = slice(safe_start_voxels_raw_3d[axes_2d[0]], min(safe_start_voxels_raw_3d[axes_2d[0]] + size_in_raw_voxels_2d[0], raw_shape_3d[axes_2d[0]]))
-        safe_raw_slicing[axes_2d[1]] = slice(safe_start_voxels_raw_3d[axes_2d[1]], min(safe_start_voxels_raw_3d[axes_2d[1]] + size_in_raw_voxels_2d[1], raw_shape_3d[axes_2d[1]]))
-        safe_raw_slicing[axis] = safe_start_voxels_raw_3d[axis]
+        raw_shape = raw_array_3d.shape
+        safe_start = [np.clip(start_vox[i], 0, raw_shape[i] - 1) for i in range(3)]
+        
+        safe_slicing = [0, 0, 0]
+        safe_slicing[axes_2d[0]] = slice(safe_start[axes_2d[0]], min(safe_start[axes_2d[0]] + size_vox_2d[0], raw_shape[axes_2d[0]]))
+        safe_slicing[axes_2d[1]] = slice(safe_start[axes_2d[1]], min(safe_start[axes_2d[1]] + size_vox_2d[1], raw_shape[axes_2d[1]]))
+        safe_slicing[axis] = safe_start[axis]
 
-        # Use the safe, clamped slicing to read from Zarr
-        raw_slice_2d = raw_array_3d[tuple(safe_raw_slicing)]
+        raw_slice_2d = raw_array_3d[tuple(safe_slicing)]
+        
         if raw_slice_2d.shape != target_shape_2d:
              if any(s == 0 for s in raw_slice_2d.shape):
                  final_raw_slice = np.zeros(target_shape_2d, dtype=raw_array_3d.dtype)
              else:
-                zoom_factor = [t / s for t, s in zip(target_shape_2d, raw_slice_2d.shape)]
-                final_raw_slice = scipy.ndimage.zoom(raw_slice_2d, zoom_factor, order=1, prefilter=False)
+                 zoom_factor = [t / s for t, s in zip(target_shape_2d, raw_slice_2d.shape)]
+                 final_raw_slice = scipy.ndimage.zoom(raw_slice_2d, zoom_factor, order=1, prefilter=False)
         else:
             final_raw_slice = raw_slice_2d
 
         if self.augment:
             final_raw_slice, final_label_slice = self._augment_data(final_raw_slice, final_label_slice)
 
-        # Add channel axis (TODO: need to add input/label transformations here)
-        raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...]).float() / 255.0
+        raw_tensor = torch.from_numpy(final_raw_slice[np.newaxis, ...])
         label_tensor = torch.from_numpy(final_label_slice).long()
-        
         return transform_2d(raw_tensor.expand(3, -1, -1)), label_tensor
 
-    def validation_iterator(self):
-        """
-        Yields the entire volume for each validation sample, sliced along Z 
-        and stacked into a batch.
-        Output Shape: (D, 3, H, W) for Raw, (D, H, W) for Labels.
-        """
-        prev_augment = self.augment
-        self.augment = False # Disable augmentation for validation
+    def __iter__(self):
+        while True:
+            sample_info = self.rng.choice(self.samples)
+            yield self._get_sample(sample_info)
 
-        for sample_info in self.val_samples:
+
+class ZarrValidationDataset3D(ZarrBaseDataset):
+    """
+    3D Validation Dataset. Iterates over 3D volumes (partitioned by rank). Yields full (C, D, H, W) volumes.
+    """
+    def __init__(self, samples, val_crop_size, rank, world_size, raw_scale='s0', labels_scale='s0'):
+        super().__init__(raw_scale, labels_scale)
+        self.samples = samples[rank::world_size]
+        self.val_crop_size = val_crop_size
+        self.rank = rank
+
+    def __iter__(self):
+        for sample_info in self.samples:
+            # Reusing logic from 2D Val, but yielding the whole block
+            # In a real refactor, this loading logic should be a shared method on Base
             zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
+            full_label_vol = zarr_root[sample_info['label_path']][:]
             
-            # 1. Load the full 3D label volume
-            label_array_3d = zarr_root[sample_info['label_path']]
-            full_label_vol = label_array_3d[:] # Load into memory
-            
-            # Parse Metadata
-            label_attrs_group_path = os.path.dirname(sample_info['label_path'])
-            label_attrs = zarr_root[label_attrs_group_path].attrs.asdict()
-            label_scale_name = os.path.basename(sample_info['label_path'])
-            label_scale, label_translation = self._parse_ome_ngff_metadata(label_attrs, label_scale_name)
-            
-            if label_scale is None:
-                # Fallback defaults if metadata missing
-                label_scale = [1.0, 1.0, 1.0]
-                label_translation = [0.0, 0.0, 0.0]
-
-            # 2. Set target shape to val_crop_size
-            target_shape_3d = self.val_crop_size
-
-            # 3. Resize Label Volume (Nearest Neighbor)
-            # Calculate zoom factor: Z is usually 1.0 (keep slices), H/W are scaled
-            label_zoom = [t / s for t, s in zip(target_shape_3d, full_label_vol.shape)]
-            
-            # Optimization: Only zoom if necessary
-            if full_label_vol.shape != target_shape_3d:
+            target_shape = self.val_crop_size
+            if full_label_vol.shape != target_shape:
+                label_zoom = [t / s for t, s in zip(target_shape, full_label_vol.shape)]
                 resized_label_vol = scipy.ndimage.zoom(full_label_vol, label_zoom, order=0, prefilter=False)
             else:
                 resized_label_vol = full_label_vol
 
-            # 4. Fetch Matching Raw Volume
-            raw_group_path = sample_info['raw_path_group']
-            raw_attrs = zarr_root[raw_group_path].attrs.asdict()
+            label_attrs = zarr_root[os.path.dirname(sample_info['label_path'])].attrs.asdict()
+            label_scale, label_translation = self._parse_ome_ngff_metadata(label_attrs, os.path.basename(sample_info['label_path']))
+            if label_scale is None: label_scale, label_translation = [1.,1.,1.], [0.,0.,0.]
+
+            raw_attrs = zarr_root[sample_info['raw_path_group']].attrs.asdict()
             best_raw_path, raw_scale, raw_translation = self._find_best_raw_scale(label_scale, raw_attrs)
-            
-            raw_array_full = zarr_root[os.path.join(raw_group_path, best_raw_path)]
-            
-            # Calculate physical bounds of the label volume to cut out the raw volume
-            label_phys_start = label_translation
+            raw_array_full = zarr_root[os.path.join(sample_info['raw_path_group'], best_raw_path)]
+
             label_phys_size = [s * sc for s, sc in zip(full_label_vol.shape, label_scale)]
-            
-            # Map to Raw Indices
-            rel_start = [ls - rs for ls, rs in zip(label_phys_start, raw_translation)]
+            rel_start = [ls - rs for ls, rs in zip(label_translation, raw_translation)]
+            rel_end = [s + sz for s, sz in zip(rel_start, label_phys_size)]
             start_raw = [int(round(p / s)) for p, s in zip(rel_start, raw_scale)]
+            end_raw = [int(round(p / s)) for p, s in zip(rel_end, raw_scale)]
+            slices = [slice(max(0, s), min(d, e)) for s, e, d in zip(start_raw, end_raw, raw_array_full.shape)]
             
-            # Calculate expected raw size based on physical size coverage
-            # We calculate end index based on physical coverage to handle resolution differences
-            rel_end_phys = [s + sz for s, sz in zip(rel_start, label_phys_size)]
-            end_raw = [int(round(p / s)) for p, s in zip(rel_end_phys, raw_scale)]
+            raw_crop_3d = raw_array_full[tuple(slices)]
+            if any(s == 0 for s in raw_crop_3d.shape): raw_crop_3d = np.zeros(target_shape, dtype=raw_array_full.dtype)
 
-            # Clamp to dataset bounds
-            raw_shape = raw_array_full.shape
-            safe_slices = []
-            for i in range(3):
-                s = max(0, start_raw[i])
-                e = min(raw_shape[i], end_raw[i])
-                safe_slices.append(slice(s, e))
-            
-            raw_crop_3d = raw_array_full[tuple(safe_slices)]
-
-            # Handle edge case: if crop is empty (out of bounds)
-            if any(s == 0 for s in raw_crop_3d.shape):
-                 raw_crop_3d = np.zeros(target_shape_3d, dtype=raw_array_full.dtype)
-
-            # 5. Resize Raw Volume (Linear Interpolation) to match the Label Z-depth and target H/W
-            raw_zoom = [t / s for t, s in zip(target_shape_3d, raw_crop_3d.shape)]
-            
-            if raw_crop_3d.shape != target_shape_3d:
-                resized_raw_vol = scipy.ndimage.zoom(raw_crop_3d, raw_zoom, order=1, prefilter=False)
+            if raw_crop_3d.shape != target_shape:
+                 raw_zoom = [t / s for t, s in zip(target_shape, raw_crop_3d.shape)]
+                 resized_raw_vol = scipy.ndimage.zoom(raw_crop_3d, raw_zoom, order=1, prefilter=False)
             else:
-                resized_raw_vol = raw_crop_3d
+                 resized_raw_vol = raw_crop_3d
 
-            # Add channels to raw
-            resized_raw_vol = resized_raw_vol.unsqueeze(1).expand(-1, 3, -1, -1)
+            # Raw: (1, D, H, W) -> expand to (3, D, H, W) if needed, or keep 1
+            # Prompt implies 3 channels usually for 2D, but let's stick to 1 channel 3D + transform
+            raw_tensor = torch.from_numpy(resized_raw_vol)
+            raw_tensor = raw_tensor.unsqueeze(0).expand(3, -1, -1, -1) # (3, D, H, W)
+            label_tensor = torch.from_numpy(resized_label_vol).long()
 
-            # Final Raw: (Batch=D, C=3, H, W)
-            # Final Label: (Batch=D, H, W)
-            yield resized_raw_vol, resized_label_vol
+            yield transform_3d(raw_tensor), label_tensor
 
-        self.augment = prev_augment
 
+class ZarrValidationDataset2D(ZarrBaseDataset):
+    """
+    2D Validation Dataset. Iterates over 3D volumes (partitioned by rank). For each volume, yields sequential (3, H, W) slices along the Z-axis.
+    """
+    def __init__(self, samples, val_crop_size, rank, world_size, raw_scale='s0', labels_scale='s0'):
+        super().__init__(raw_scale, labels_scale)
+        # Distributed Partitioning: Slice the list
+        self.samples = samples[rank::world_size]
+        self.val_crop_size = val_crop_size # (D, H, W)
+        self.rank = rank
+
+    def __iter__(self):
+        # Iterate over assigned validation volumes
+        for sample_idx, sample_info in enumerate(self.samples):
+            zarr_root = zarr.open(sample_info['zarr_path'], mode='r')
+            
+            # 1. Load Full Label Volume
+            full_label_vol = zarr_root[sample_info['label_path']][:]
+            
+            # 2. Resize to Target (D, H, W)
+            target_shape = self.val_crop_size
+            if full_label_vol.shape != target_shape:
+                label_zoom = [t / s for t, s in zip(target_shape, full_label_vol.shape)]
+                resized_label_vol = scipy.ndimage.zoom(full_label_vol, label_zoom, order=0, prefilter=False)
+            else:
+                resized_label_vol = full_label_vol
+
+            # 3. Load Corresponding Raw Volume
+            label_attrs = zarr_root[os.path.dirname(sample_info['label_path'])].attrs.asdict()
+            label_scale, label_translation = self._parse_ome_ngff_metadata(label_attrs, os.path.basename(sample_info['label_path']))
+            if label_scale is None: label_scale, label_translation = [1.,1.,1.], [0.,0.,0.]
+
+            raw_attrs = zarr_root[sample_info['raw_path_group']].attrs.asdict()
+            best_raw_path, raw_scale, raw_translation = self._find_best_raw_scale(label_scale, raw_attrs)
+            raw_array_full = zarr_root[os.path.join(sample_info['raw_path_group'], best_raw_path)]
+
+            # Map label bounds to raw indices
+            label_phys_size = [s * sc for s, sc in zip(full_label_vol.shape, label_scale)]
+            rel_start = [ls - rs for ls, rs in zip(label_translation, raw_translation)]
+            rel_end = [s + sz for s, sz in zip(rel_start, label_phys_size)]
+            
+            start_raw = [int(round(p / s)) for p, s in zip(rel_start, raw_scale)]
+            end_raw = [int(round(p / s)) for p, s in zip(rel_end, raw_scale)]
+            
+            slices = [slice(max(0, s), min(d, e)) for s, e, d in zip(start_raw, end_raw, raw_array_full.shape)]
+            raw_crop_3d = raw_array_full[tuple(slices)]
+
+            if any(s == 0 for s in raw_crop_3d.shape):
+                raw_crop_3d = np.zeros(target_shape, dtype=raw_array_full.dtype)
+
+            # Resize Raw
+            if raw_crop_3d.shape != target_shape:
+                 raw_zoom = [t / s for t, s in zip(target_shape, raw_crop_3d.shape)]
+                 resized_raw_vol = scipy.ndimage.zoom(raw_crop_3d, raw_zoom, order=1, prefilter=False)
+            else:
+                 resized_raw_vol = raw_crop_3d
+
+            # 4. Prepare Tensors
+            # Normalize Raw: (D, H, W) -> Float Tensor
+            raw_tensor_vol = torch.from_numpy(resized_raw_vol)
+            label_tensor_vol = torch.from_numpy(resized_label_vol).long()
+
+            # --- ORTHOPLANE ITERATION ---
+            # We iterate through axes 0 (Z), 1 (Y), and 2 (X)
+            # Using a global unique ID for the sample helps reconstruction (e.g., hash of path or simple index)
+            sample_id = f"rank{self.rank}_sample{sample_idx}"
+
+            for axis in [0, 1, 2]:
+                num_slices = target_shape[axis]  # (D, H, W) 
+                
+                for slice_idx in range(num_slices):
+                    # Slicing dynamically based on axis
+                    # If axis=0 (Z): slice is (H, W)
+                    # If axis=1 (Y): slice is (D, W)
+                    # If axis=2 (X): slice is (D, H)
+                    
+                    if axis == 0:
+                        r_slice = raw_tensor_vol[slice_idx, :, :]
+                        l_slice = label_tensor_vol[slice_idx, :, :]
+                    elif axis == 1:
+                        r_slice = raw_tensor_vol[:, slice_idx, :]
+                        l_slice = label_tensor_vol[:, slice_idx, :]
+                    else:
+                        r_slice = raw_tensor_vol[:, :, slice_idx]
+                        l_slice = label_tensor_vol[:, :, slice_idx]
+
+                    # Expand to (3, H, W) for the model 
+                    img = r_slice.unsqueeze(0).expand(3, -1, -1)
+                    
+                    # Apply transform (normalize)
+                    img = transform_2d(img)
+
+                    # Metadata for reconstruction
+                    meta = {
+                        "sample_id": sample_id,
+                        "axis": axis,         # 0=XY, 1=XZ, 2=YZ
+                        "slice_idx": slice_idx,
+                        "vol_shape": torch.tensor(self.val_crop_size) # pass shape to help init buffers
+                    }
+
+                    yield img, l_slice, meta
 
 def build_data_loader(
     batch_size: int,
     root_dir: str,
-    crop_size: tuple[int, int] | tuple[int, int, int], 
-    val_crop_size: tuple[int, int, int], 
+    crop_size: Union[Tuple[int, int], Tuple[int, int, int]], 
+    val_crop_size: Tuple[int, int, int], 
     rank: int = 0,
+    world_size: int = 1, # Added to support proper distributed partitioning
     augment: bool = False
-) -> DataLoader:
+) -> Tuple[DataLoader, DataLoader]:
     """
-    Builds a 2D or 3D data loader for EM data.
-
-    Args:
-        batch_size (int): The batch size for the data loader.
-        crop_size: A tuple of (depth, height, width) for the desired crop.
-        rank (int): The rank of the current process.
-
-    Returns:
-        DataLoader: A configured data loader for distributed training.
+    Builds both Train and Validation loaders.
     """
-    # We pick out 2D or 3D dataset class based on the crop_size argument
+    
+    # 1. Find and split samples (once)
+    train_samples, val_samples = find_and_split_samples(root_dir, labels_scale='s0')
+    print(f"[Rank {rank}]: {len(train_samples)} training samples, {len(val_samples)} validation samples.")
+    
+    # 2. Instantiate datasets
     if len(crop_size) == 3:
-        dataset = ZarrSegmentationDataset3D(
-            root_dir=root_dir, 
+        # 3D
+        train_dataset = ZarrTrainDataset3D(
+            samples=train_samples,
             crop_size=crop_size,
+            augment=augment
+        )
+        val_dataset = ZarrValidationDataset3D(
+            samples=val_samples,
             val_crop_size=val_crop_size,
             rank=rank,
-            augment=augment
+            world_size=world_size
         )
     else:
-        dataset = ZarrSegmentationDataset2D(
-            root_dir=root_dir, 
+        # 2D
+        train_dataset = ZarrTrainDataset2D(
+            samples=train_samples,
             crop_size=crop_size,
-            val_crop_size=val_crop_size,
-            rank=rank,
             augment=augment
         )
-    return DataLoader(dataset, batch_size=batch_size, num_workers=0)
+        val_dataset = ZarrValidationDataset2D(
+            samples=val_samples,
+            val_crop_size=val_crop_size,
+            rank=rank,
+            world_size=world_size
+        )
+
+    # 3. Build loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
+    
+    # We could use a different batch size for validation, but keeping it simple and using same batch_size for now
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
+
+    return train_loader, val_loader

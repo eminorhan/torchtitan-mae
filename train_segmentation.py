@@ -15,7 +15,7 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
-from torchtitan.datasets_refactor import build_data_loader
+from torchtitan.datasets import build_data_loader
 from torchtitan.evaluation import compute_confusion_matrix
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
