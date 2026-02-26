@@ -370,7 +370,9 @@ def main(job_config: JobConfig):
         logger.info("Sleeping 2 seconds for other ranks to complete")
         time.sleep(2)
 
-    metric_logger.close()
+    if log_file_handle is not None:
+        log_file_handle.close()
+
     logger.info("Training completed")
 
 if __name__ == "__main__":
