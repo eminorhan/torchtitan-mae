@@ -25,24 +25,9 @@ from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import parallelize_dino, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.evaluation import evaluate_2d, evaluate_3d
-from torchvision.utils import save_image
 
 # dino imports
 from dinov3.eval.segmentation.models import build_segmentation_decoder
-
-
-def print_parameter_status(model):
-    """
-    Iterates over all named parameters of a PyTorch model and prints their
-    name and whether they require a gradient (i.e., are being trained).
-    """
-    logger.info("Parameter Training Status:")
-    logger.info("-" * 30)
-    for name, param in model.named_parameters():
-        status = "TRAINING" if param.requires_grad else "FROZEN"
-        logger.info(f"{name:<50} | Requires Grad: {param.requires_grad} ({status})")
-    logger.info("-" * 30)
-    logger.info("\n")
 
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
@@ -221,7 +206,7 @@ def main(job_config: JobConfig):
     )
 
     if torch.distributed.get_rank() == 0:
-        print_parameter_status(model)  # check if the parameters are being trained or frozen
+        utils.print_parameter_status(model)  # check if the parameters are being trained or frozen
 
     # train loop
     with maybe_enable_profiling(job_config, global_step=train_state.step) as torch_profiler, maybe_enable_memory_snapshot(job_config, global_step=train_state.step) as memory_profiler:

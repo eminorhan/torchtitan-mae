@@ -182,6 +182,20 @@ def get_peak_flops(device_name: str) -> int:
         return 191.5e12
 
 
+def print_parameter_status(model):
+    """
+    Iterates over all named parameters of a PyTorch model and prints their
+    name and whether they require a gradient (i.e., are being trained).
+    """
+    logger.info("Parameter Training Status:")
+    logger.info("-" * 30)
+    for name, param in model.named_parameters():
+        status = "TRAINING" if param.requires_grad else "FROZEN"
+        logger.info(f"{name:<50} | Requires Grad: {param.requires_grad} ({status})")
+    logger.info("-" * 30)
+    logger.info("\n")
+
+
 @dataclass(frozen=True)
 class Color:
     black = "\033[30m"
