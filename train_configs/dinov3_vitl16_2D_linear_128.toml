@@ -12,8 +12,7 @@ profile_freq = 10
 [metrics]
 log_freq = 100
 eval_freq = 100
-enable_tensorboard = false
-save_tb_folder = "tb"
+folder = "logs"
 
 [model]
 backbone = "dinov3_vitl16"  # ["dinov3_vit7b16", "dinov3_vith16plus", "dinov3_vitl16"] + 3D versions

@@ -7,6 +7,7 @@
 import contextlib
 import os
 import time
+import json
 from datetime import timedelta
 import torch
 from torch.distributed.elastic.multiprocessing.errors import record
@@ -19,7 +20,7 @@ from torchtitan.datasets import build_data_loader
 from torchtitan.evaluation import compute_confusion_matrix
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
-from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
+from torchtitan.metrics import build_gpu_memory_monitor
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import parallelize_dino, ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
@@ -162,14 +163,22 @@ def main(job_config: JobConfig):
 
     checkpoint_loaded = checkpoint.load()
 
-    metric_logger = build_metric_logger(job_config, parallel_dims)
-
-    # plot losses loaded from checkpoint (if any) to TensorBoard
-    # NOTE: Loss info after the last log step before checkpoint saving will not be plotted. This can be avoided by setting checkpoint.interval to be a multiple of metrics.log_freq
-    if train_state.step > 0:
-        for idx, step in enumerate(train_state.log_steps):
-            metrics = {"loss_metrics/global_avg_loss": train_state.global_avg_losses[idx], "loss_metrics/global_max_loss": train_state.global_max_losses[idx]}
-            metric_logger.log(metrics, step=step)
+    # set up file logger (only on rank 0)
+    log_file_handle = None
+    if torch.distributed.get_rank() == 0:
+        # log file will be under dump_folder/log_folder
+        dump_folder = getattr(job_config.job, "dump_folder", ".")
+        log_folder = getattr(job_config.metrics, "folder", "logs")
+        
+        # combine: e.g., "./outputs/dinov3_vitl16_2D_linear_128/logs"
+        log_dir = os.path.join(dump_folder, log_folder)
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # define the final file path
+        log_file_path = os.path.join(log_dir, "metrics.jsonl")
+        
+        # open in append mode so resuming jobs simply continue logging
+        log_file_handle = open(log_file_path, "a")
 
     train_iterator = iter(train_loader)
     train_context = get_train_context(parallel_dims.loss_parallel_enabled, job_config.experimental.enable_compiled_autograd)
@@ -203,7 +212,6 @@ def main(job_config: JobConfig):
     else:
         eval_fn = evaluate_3d
 
-    # train loop
     logger.info(
         f"Training starts at step {train_state.step + 1}, "
         f"with local batch size {job_config.training.batch_size}, "
@@ -215,6 +223,7 @@ def main(job_config: JobConfig):
     if torch.distributed.get_rank() == 0:
         print_parameter_status(model)  # check if the parameters are being trained or frozen
 
+    # train loop
     with maybe_enable_profiling(job_config, global_step=train_state.step) as torch_profiler, maybe_enable_memory_snapshot(job_config, global_step=train_state.step) as memory_profiler:
         while train_state.step < job_config.training.steps:
             train_state.step += 1
@@ -280,30 +289,37 @@ def main(job_config: JobConfig):
                 time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
 
                 gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
+                current_lr = optimizers.optimizers[0].param_groups[0]['lr']
 
-                metrics = {
-                    "loss_metrics/global_avg_loss": global_avg_loss,
-                    "loss_metrics/global_max_loss": global_max_loss,
-                    "time_metrics/end_to_end(s)": time_end_to_end,
-                    "time_metrics/data_loading(s)": time_data_loading,
-                    "time_metrics/data_loading(%)": time_data_loading_pct,
-                    "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
-                    "memory/max_active(%)": gpu_mem_stats.max_active_pct,
-                    "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
-                    "memory/max_reserved(%)": gpu_mem_stats.max_reserved_pct,
-                    "memory/num_alloc_retries": gpu_mem_stats.num_alloc_retries,
-                    "memory/num_ooms": gpu_mem_stats.num_ooms,
-                }
-                metric_logger.log(metrics, step=train_state.step)
+                # log to file
+                if log_file_handle is not None:
+                    metrics = {
+                        "step": train_state.step,
+                        "mode": "train",
+                        "lr": current_lr,
+                        "global_avg_loss": global_avg_loss,
+                        "global_max_loss": global_max_loss,
+                        "time_end_to_end_s": time_end_to_end,
+                        "time_data_loading_s": time_data_loading,
+                        "time_data_loading_pct": time_data_loading_pct,
+                        "mem_max_active_gib": gpu_mem_stats.max_active_gib,
+                        "mem_max_active_pct": gpu_mem_stats.max_active_pct,
+                        "mem_max_reserved_gib": gpu_mem_stats.max_reserved_gib,
+                        "mem_max_reserved_pct": gpu_mem_stats.max_reserved_pct,
+                        "mem_num_alloc_retries": gpu_mem_stats.num_alloc_retries,
+                        "mem_num_ooms": gpu_mem_stats.num_ooms,
+                    }
+                    log_file_handle.write(json.dumps(metrics) + "\n")
+                    log_file_handle.flush()  # force write to disk
 
-                if torch.distributed.get_rank() == 0:    
-                    logger.info(
-                        f"{color.cyan}step: {train_state.step:2}  "
-                        f"{color.green}loss: {global_avg_loss:7.4f}  "
-                        f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
-                        f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
-                        f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
-                    )
+                # log to stdout
+                logger.info(
+                    f"{color.cyan}step: {train_state.step:2}  "
+                    f"{color.green}loss: {global_avg_loss:7.4f}  "
+                    f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
+                    f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
+                    f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
+                )
 
                 losses_since_last_log.clear()
                 data_loading_times.clear()
@@ -316,20 +332,24 @@ def main(job_config: JobConfig):
                 
                 with torch.no_grad():
                     avg_val_loss, avg_miou = eval_fn(model, val_loader, job_config, loss_fn, resample_preds, dp_mesh)
+                    
+                    # log validation metrics to file
+                    if log_file_handle is not None:
+                        val_metrics = {
+                            "step": train_state.step,
+                            "mode": "val",
+                            "avg_val_loss": avg_val_loss,
+                            "avg_miou": avg_miou
+                        }
+                        log_file_handle.write(json.dumps(val_metrics) + "\n")
+                        log_file_handle.flush()
 
-                if torch.distributed.get_rank() == 0:
+                    # log to stdout
                     logger.info(
                         f"{color.cyan}step: {train_state.step:2}  "
                         f"{color.green}val loss: {avg_val_loss:.4f}  "
-                        f"{color.red}mean IoU: {avg_miou:.4f}  "
+                        f"{color.red}val mIoU: {avg_miou:.4f}  "
                     )
-                    
-                    # log val metrics to tb
-                    val_metrics = {
-                        "val_metrics/avg_loss": avg_val_loss,
-                        "val_metrics/miou": avg_miou,
-                    }
-                    metric_logger.log(val_metrics, step=train_state.step)
 
                 model.train()
             # ###### end eval & visualize ######
