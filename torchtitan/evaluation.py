@@ -1,7 +1,8 @@
 import torch
 from pathlib import Path
-from .utils import dist_sum
-from .visualization import visualize_slices
+
+from torchtitan.utils import dist_sum
+from torchtitan.visualization import visualize_slices
 
 def compute_pixel_accuracy(logits, targets):
     """
