@@ -3,8 +3,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from matplotlib.animation import FuncAnimation
-import imageio
-import io
 
 
 def visualize_slices(

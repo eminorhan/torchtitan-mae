@@ -1,7 +1,7 @@
 import os
 import zarr
-import numpy as np
 import scipy.ndimage
+import numpy as np
 from typing import List, Tuple, Dict, Optional, Union
 from glob import glob
 
