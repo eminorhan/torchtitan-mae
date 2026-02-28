@@ -105,7 +105,7 @@ def main(job_config: JobConfig):
     model = build_segmentation_decoder(backbone, decoder_type=job_config.model.head, num_classes=job_config.model.num_classes)
 
     if torch.distributed.get_rank() == 0:
-        logger.info(f"Model: {model}")  # check if the parameters are being trained or frozen
+        logger.info(f"Model: {model}")
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
