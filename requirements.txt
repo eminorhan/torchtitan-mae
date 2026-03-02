@@ -1,4 +1,4 @@
-# Set CUDA 12.9 wheels
+# Set flag for CUDA 12.9 wheels
 --extra-index-url https://download.pytorch.org/whl/cu129
 
 # Required PyTorch packages
@@ -6,7 +6,7 @@ torch
 torchao
 torchvision
 
-# Direct git dependency for DINOv3 models
+# Direct git dependency for custom DINOv3 models
 dinov3 @ git+https://github.com/eminorhan/dinov3.git
 
 # A few other packages

@@ -6,7 +6,6 @@ The skeleton of the training code here is based on an earlier version of the [`t
 This repository is currently being developed and tested on **Arch**, an HPE Cray EX254n supercomputer hosted at OLCF with 168 NVIDIA GH200 superchips (42 nodes x 4 GH200s; each GH200 has 96GB HBM3 high-bandwidth GPU memory).
 
 ### Requirements
-A successful reproduction of the development environment requires the following steps.
 
 * Create a python virtual environment and activate it:
 ```bash
@@ -14,34 +13,25 @@ python -m venv myvenv
 source myvenv/bin/activate
 ``` 
 
-* Install the latest PyTorch stable built with CUDA 12.9 (and the corresponding version of `torchvision`):
+* Clone this repo and cd into the repo directory:
 ```bash
-pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/cu129
+git clone https://github.com/eminorhan/torchtitan-segmentation.git
+cd torchtitan-segmentation
 ```
 
-* Install the following packages:
+* Install the required packages:
 ```bash
-pip install torchdata tomli tensorboard blobfile tabulate ninja
+pip install -r requirements.txt
 ```
 
-* Install FlashAttention-3 for the Hopper architecture as described [here](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release), basically:
+* **[FlashAttention-3]** If you're running this repo on Hopper GPUs, we strongly recommend installing [FlashAttention-3](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) (FA-3). You can install FA-3 for the Hopper architecture as described [here](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) (make sure that you have `ninja`, `wheel`, and `packaging` installed before attempting to run the following):
 ```bash
 git clone https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention/hopper
 python setup.py install
 ```
 
-* Install the `aws-ofi-nccl` plugin, which will enable `nccl` to use `libfabric` (you need to change the paths below if you're not installing this on Arch):
-```bash
-wget https://github.com/aws/aws-ofi-nccl/releases/download/v1.14.0/aws-ofi-nccl-1.14.0.tar.gz
-tar -xzvf aws-ofi-nccl-1.14.0.tar.gz
-cd aws-ofi-nccl-1.14.0
-CC=gcc CXX=g++ ac_cv_header_limits_h=yes ./configure --with-libfabric=/opt/cray/libfabric/1.22.0 --with-cuda=/opt/nvidia/hpc_sdk/Linux_aarch64/25.3/cuda/12.8 --enable-trace --prefix=/lustre/gale/stf218/scratch/emin/aws-ofi-nccl-1.14.0 --disable-tests
-make
-make install
-```
-
-* Then you can clone this repo and run the [training script](train_demo.sh).
+* **[aws-ofi-nccl]** (On Arch only) For a more performant interconnect, install the [`aws-ofi-nccl`](https://github.com/aws/aws-ofi-nccl) plugin, which will enable `nccl` to use `libfabric`. I provide an example bash shell script [here](build_aws_ofi_nccl.sh), demonstrating how to install the `aws-ofi-nccl` plugin (note that this is Arch specific; you would need to modify the script depending on your set-up).
 
 ### Model
 I implemented an extremely generic 3D MAE model with an encoder and a decoder (both generic transformer models). For a refresher on MAEs, please see, *e.g.*, [the original MAE paper](https://arxiv.org/abs/2111.06377). The model architecture is defined [here](torchtitan/models/llama/model.py) and the default model configuration I'm working with is a **~2B** parameter model that uses a 16-layer ViT encoder with a dimensionality of 3072 and a 4-layer ViT decoder with a dimensionality of 512. The model uses (8, 8, 8) patches. To impart positional information to the patches (or tokens), I currently use separate RoPE embeddings for the encoder and the decoder. I'm not sure if this choice is optimal. We should also definitely try learnable position embeddings later on.
