@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 if __name__ == "__main__":
-    
+
     TORCH_HUB_PATH = "/lustre/blizzard/stf218/scratch/emin/torch_hub"  # this is where the dinov3 pth checkpoints are stored
     DINOV3_REPO_PATH = "/lustre/blizzard/stf218/scratch/emin/dinov3"  # dinov3 repo path
     DECODER_TYPE = "linear"  # segmentation head type
@@ -20,7 +20,7 @@ if __name__ == "__main__":
         # "dinov3_vith16plus": "dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth",
         # "dinov3_vitl16_3D": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
         # "dinov3_vitl16": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
-        "dinov3_vitl16": "teacher_checkpoint-8aa4cbdd.pth",
+        "dinov3_vitl16": "teacher_backbone_only_checkpoint_scratch-8aa4cbdd.pth",
         # "dinov3_vitb16_3D": "dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
         # "dinov3_vitb16": "dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
     }
@@ -37,7 +37,7 @@ if __name__ == "__main__":
         print(f"Loaded and built model {backbone}...")
         print(f"Model: {model}")
 
-        dcp_path = Path(f"{DCP_ROOT}/{backbone}_{DECODER_TYPE}_cellmap/checkpoint/step-0")
+        dcp_path = Path(f"{DCP_ROOT}/{backbone}_{DECODER_TYPE}_cellmap_scratch/checkpoint/step-0")
         storage_writer = DCP.filesystem.FileSystemWriter(dcp_path, thread_count=1)
         dcp_path.mkdir(parents=True, exist_ok=True)
         DCP.save({"model": model_state_dict}, storage_writer=storage_writer)

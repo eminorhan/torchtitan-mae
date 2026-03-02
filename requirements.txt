@@ -1,10 +1,16 @@
+# Set CUDA 12.9 wheels
+--extra-index-url https://download.pytorch.org/whl/cu129
+
+# Required PyTorch packages
+torch
+torchao
+torchvision
+
+# Direct git dependency for DINOv3 models
 dinov3 @ git+https://github.com/eminorhan/dinov3.git
-huggingface_hub==1.2.3
-matplotlib==3.10.8
-numpy==1.24.4
-scipy==1.10.1
-tomli==2.3.0
-torch==2.9.1+cu129
-torchao==0.16.0
-torchvision==0.24.1
-zarr==2.18.4
+
+# A few other packages
+huggingface_hub
+matplotlib
+tomli
+zarr
