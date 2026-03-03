@@ -1,5 +1,5 @@
 ### Large-scale distributed training of 2D/3D segmentation models on volume EM data
-This repository can be used to train large-scale 2D/3D segmentation models on volume EM data. It supports both masked autoencoder (MAE) type pretraining on unlabeled data, as well as supervised training on labeled data.
+This repository can be used to train large-scale 2D/3D segmentation models on volume EM data. It currently supports masked autoencoder (MAE) type pretraining on unlabeled data, as well as supervised training on labeled data.
 
 The skeleton of the training code here is based on an earlier version of the [`torchtitan`](https://github.com/pytorch/torchtitan) library, although the model definitions, data loading, and parallelization components are substantially rewritten. The code currently supports pure **DDP** (distributed data parallelism), **FSDP** (fully sharded data parallelism) and **TP** (tensor parallelism). TP is unlikely to be needed unless you're training very large models and/or models with very large context sizes.
 
@@ -13,18 +13,18 @@ python -m venv myvenv
 source myvenv/bin/activate
 ``` 
 
-* Clone this repo and cd into the repo directory:
+* Clone this repository and `cd` into it:
 ```bash
 git clone https://github.com/eminorhan/torchtitan-segmentation.git
 cd torchtitan-segmentation
 ```
 
-* Install the required packages:
+* Install the required dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-* **[FlashAttention-3]** If you're running this repo on Hopper GPUs, we strongly recommend installing [FlashAttention-3](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) (FA-3). You can install FA-3 for the Hopper architecture as described [here](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) (make sure that you have `ninja`, `wheel`, and `packaging` installed before attempting to run the following):
+* **[FlashAttention-3]** If you're running this repository on Hopper GPUs, we strongly recommend installing [FlashAttention-3](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) (FA-3). You can install FA-3 for the Hopper architecture as described [here](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) (make sure you have `ninja`, `wheel`, and `packaging` installed before attempting to run the following):
 ```bash
 git clone https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention/hopper
@@ -33,35 +33,54 @@ python setup.py install
 
 * **[aws-ofi-nccl]** (On Arch only) For a more performant interconnect, install the [`aws-ofi-nccl`](https://github.com/aws/aws-ofi-nccl) plugin, which will enable `nccl` to use `libfabric`. I provide an example bash shell script [here](build_aws_ofi_nccl.sh), demonstrating how to install the `aws-ofi-nccl` plugin (note that this is Arch specific; you would need to modify the script depending on your set-up).
 
-### Model
-I implemented an extremely generic 3D MAE model with an encoder and a decoder (both generic transformer models). For a refresher on MAEs, please see, *e.g.*, [the original MAE paper](https://arxiv.org/abs/2111.06377). The model architecture is defined [here](torchtitan/models/llama/model.py) and the default model configuration I'm working with is a **~2B** parameter model that uses a 16-layer ViT encoder with a dimensionality of 3072 and a 4-layer ViT decoder with a dimensionality of 512. The model uses (8, 8, 8) patches. To impart positional information to the patches (or tokens), I currently use separate RoPE embeddings for the encoder and the decoder. I'm not sure if this choice is optimal. We should also definitely try learnable position embeddings later on.
+### Components
+The following is a brief description of the main components of the code base so users can navigate and modify the code base more easily according to their needs:
+
+* [`torchtitan/parallelisms`](torchtitan/parallelisms/): implements the main parallelization techniques (DDP, FSDP, TP), as well as activation checkpointing (AC), JIT compilation (`torch.compile`), and mixed precision training for both MAE [`torchtitan/parallelisms/parallelize_mae.py`](torchtitan/parallelisms/parallelize_mae.py) and DINOv3 [`torchtitan/parallelisms/parallelize_dino.py`](torchtitan/parallelisms/parallelize_dino.py) models used for segmentation.
+* [`torchtitan/checkpoint.py`](torchtitan/checkpoint.py): implements the distributed checkpoint saving and loading logic.
+* [`torchtitan/config_manager.py`](torchtitan/config_manager.py): implements all config options and defaults.
+* [`torchtitan/datasets.py`](torchtitan/datasets.py): implements the 2D/3D dataset and dataloader classes.
+* [`torchtitan/evaluation.py`](torchtitan/evaluation.py): implements the evaluation metrics for the 2D/3D models.
+* [`torchtitan/model.py`](torchtitan/model.py): implements the MAE encoder/decoder models. The segmentation models are borrowed from DINOv3 and are implemented in a [separate repository](https://github.com/eminorhan/dinov3).
+* [`torchtitan/train_configs`](torchtitan/train_configs): contains config files for various training experiments (these override the defaults in [`torchtitan/config_manager.py`](torchtitan/config_manager.py)).
 
 ### Data
-For purposes of development and testing, I only downloaded two EM volumes from [OpenOrganelle](https://www.openorganelle.com/datasets): `jrc_cos7-1a` and `jrc_mus-hippocampus-3`. The data loading logic is implemented [here](torchtitan/datasets/datasets.py). Currently, I'm just taking random crops of size (512, 512, 512) from one of the available volumes at the highest resolution (`s0`) and I don't apply any spatial transformations. I've found that anything that involves doing an interpolation on a `zarr` array imposes a huge bottleneck in data loading times (*e.g.* data loading times increase by almost 2 OOMs with random rotations). I'd like to avoid random rotations altogether if possible, and furthermore implement spatial scaling in a way that doesn't involve any interpolation. 
+Download the full CellMap challenge data as described [here](https://github.com/janelia-cellmap/cellmap-segmentation-challenge?tab=readme-ov-file#download-the-data), *e.g.*:
+```bash
+csc fetch-data --raw-padding 128 --fetch-all-em-resolutions --batch-size 1024 --num-workers 64
+```
 
-Comment: Somewhat surprisingly for me, rather than the large context sizes, spatial transformations (scaling and rotation) on `zarr` arrays turn out to be the most serious obstacle to efficient distributed training at scale for this problem.
+### Training
+We recommend using `torchrun` to launch distributed training jobs.
 
-### Training details
-The models are trained for a small number of steps (typically ~10 steps) with FSDP only on up to 40 nodes (160 GH200s) on Arch. I tried two different random masking ratios (we should try other masking strategies later on): a realistic masking ratio of 95% and and a very small masking ratio of 1% basically to see if I could fit the model in memory with the ~full context length (note that in an MAE only the visible or non-masked patches are passed through the encoder, so this is a good indication of whether we can finetune the encoder later on with the full context length). I'm also using `bf16` mixed precision training, full activation checkpointing, and the [FlashAttetion-3](https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#flashattention-3-beta-release) kernels for the Hopper architecture. I found the FA-3 kernels really helpful: they improve the mfu (model flops utilization) and the training throughput by ~1.6x in my estimate.
+**MAE pretraining:** Use the [`train_mae.py`](train_mae.py) script to launch an MAE pretraining job, *e.g.*:
+```python
+torchrun \
+    --nnodes NNODES \
+    --nproc_per_node GPUS_PER_NODE \
+    --max_restarts 1 \
+    --node_rank NODEID \
+    --rdzv_id 101 \
+    --rdzv_backend c10d \
+    --rdzv_endpoint "MASTER_ADDR:MASTER_PORT" \
+    ./train_mae.py \
+    --job.config_file CONFIG_FILE
+```
+where `CONFIG_FILE` specifies the config file to be used for the training job. A complete example SLURM batch file can be found in [`train_mae.sh`](train_mae.sh). This uses the example config file in [`train_configs/demo_mae.toml`](train_configs/demo_mae.toml), which implements a very generic 16-layer 3D ViT encoder with **~2B** parameters and a generic 4-layer ViT decoder.
 
-Note that with a masking ratio of 1%, the effective context size for the model is roughly ~260k (*i.e.* 0.99 x (512/8)**3). Comment: It was quite remarkable to me that a model with this size and context length could fit into memory on merely 5 nodes (20 GPUs) with FSDP only.
+**Segmentation training:** Use the [`train_segmentation.py`](train_segmentation.py) script to launch a supervised segmentation training job, *e.g.*:
+```python
+torchrun \
+    --nnodes NNODES \
+    --nproc_per_node GPUS_PER_NODE \
+    --max_restarts 1 \
+    --node_rank NODEID \
+    --rdzv_id 101 \
+    --rdzv_backend c10d \
+    --rdzv_endpoint "MASTER_ADDR:MASTER_PORT" \
+    ./train_segmentation.py \
+    --job.config_file CONFIG_FILE
+```
+where `CONFIG_FILE` specifies the config file to be used for the training job. Example config files for training 2D and 3D segmentation models can be found in [`train_configs/demo_segmentation_2d.toml`](train_configs/demo_segmentation_2d.toml) and [`train_configs/demo_segmentation_3d.toml`](train_configs/demo_segmentation_3d.toml), respectively. A complete example SLURM batch file can be found in [`train_segmentation.sh`](train_segmentation.sh).
 
-### Results
-The following table reports some basic throughput and mfu performance on 5 and 40 nodes with masking ratios of 1% and 95%. Local batch size (per device) is 1 in all these conditions, so going from 5 nodes to 40 nodes just increases the global batch size 8x (from 20 to 160). Tokens/s/GPU indicates the throughput per device and s/step indicates the overall wall clock time for a single training step. For the 95% masking conditions, throughput and mfu numbers can likely be improved by increasing the local batch size, but I haven't explored this yet. The numbers reported here are approximate.
-
-| Training config. | tokens/s/GPU | mfu (%) | s/step | 
-|----------|---|---|---|
-| 5 nodes, 1% mask ratio (full AC) | 2040 | 34 | 130 |
-| 5 nodes, 95% mask ratio (full AC) | 12100 | 25 | 22 |
-| 5 nodes, 95% mask ratio (no AC) | 15000 | 30 | 18 |
-| 40 nodes, 1% mask ratio (full AC) | 1910 | 32 | 140 |
-| 40 nodes, 95% mask ratio (full AC) | 11800 | 23 | 24 |
-| 40 nodes, 95% mask ratio (no AC) | 13900 | 29 | 20 |
-
-AC: activation checkpointing (note that for low masking ratios like 1%, turning off AC results in OOM errors). In general, AC incurs a ~25% reduction in throughput in exchange for a substantial reduction in GPU memory usage. We also observe that going from 5 nodes to 40 nodes, throughput per device (tokens/s/GPU) stays roughly the same, indicating near perfect weak scaling, which is nice to see.
-
-The SLURM batch script used for these experiments is [here](train_demo.sh) with the training configuration file available from [here](train_configs/demo.toml).
-
-The following figure shows an example where the top row is a sequence of uniformly spaced slices from a (512, 512, 512) crop, the middle row shows the same crop masked, and the bottom row shows the reconstructions from a model trained for about ~10 steps (so, the reconstructions are not very good yet). The masking ratio is 1% in this example:
-
-![](assets/sample.jpg)
+![](assets/dinov3_vitl16_val_sample_rank8_sample0.gif)
