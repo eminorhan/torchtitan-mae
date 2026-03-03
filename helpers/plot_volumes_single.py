@@ -223,9 +223,9 @@ def visualize_individual_gifs(
 # --- Example Usage ---
 if __name__ == "__main__":
     visualize_individual_gifs(
-        root_dir="/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data",
+        root_dir="/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data",  # data_path
         output_dir="training_crops",
-        num_samples=-1,        # Process first k samples
+        num_samples=-1,        # Process first k samples (-1 for all)
         viz_hw=(512, 512),     # Higher resolution for single plots
         z_stride=1,            # Smaller stride for smoother individual animations
         fps=10
