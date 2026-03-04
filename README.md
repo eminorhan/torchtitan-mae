@@ -104,7 +104,7 @@ During training:
 
 ![](assets/dinov3_vitl16_val_sample_rank8_sample0.gif)
 
-The frequency with which these things happen can be controlled from the config files.
+The frequency with which these things happen can be controlled from the training config files.
 
 ### Helpers
 
