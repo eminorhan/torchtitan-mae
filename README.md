@@ -103,3 +103,5 @@ The [`helpers`](helpers) directory provides a few useful utilities:
 * [`helpers/create_slice_dataset.py`](helpers/create_slice_dataset.py): creates a Hugging Face dataset class of all 2D slices from a `zarr` volume dataset and pushes it to the Hugging Face hub (as in [this example](https://huggingface.co/datasets/eminorhan/cellmap-2d) for the CellMap challenge data).
 * [`helpers/plot_volumes_grid.py`](helpers/plot_volumes_grid.py): visualizes a grid of EM volumes with their segmentation masks as a `.gif` animation. 
 * [`helpers/plot_volumes_single.py`](helpers/plot_volumes_single.py): visualizes individual EM volumes with their segmentation masks and labels as a `.gif` animation, like the following example:
+
+![](assets/sample_27_viz.gif)

@@ -519,18 +519,18 @@ def build_data_loader(
     crop_size: Union[Tuple[int, int], Tuple[int, int, int]], 
     val_crop_size: Tuple[int, int, int], 
     rank: int = 0,
-    world_size: int = 1, # Added to support proper distributed partitioning
+    world_size: int = 1,
     augment: bool = False
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Builds both Train and Validation loaders.
     """
     
-    # 1. Find and split samples (once)
+    # Find and split samples (once)
     train_samples, val_samples = find_and_split_samples(root_dir, labels_scale='s0')
     print(f"[Rank {rank}]: {len(train_samples)} training samples, {len(val_samples)} validation samples.")
     
-    # 2. Instantiate datasets
+    # Instantiate datasets
     if len(crop_size) == 3:
         # 3D
         train_dataset = ZarrTrainDataset3D(
@@ -558,7 +558,7 @@ def build_data_loader(
             world_size=world_size
         )
 
-    # 3. Build loaders
+    # Build loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
     
     # We could use a different batch size for validation, but keeping it simple and using same batch_size for now

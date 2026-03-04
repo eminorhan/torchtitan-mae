@@ -174,13 +174,13 @@ def visualize_individual_gifs(
         def update(z_idx):
             nonlocal text_artists
             
-            # Safe Z index
+            # Safe z index
             safe_z = min(z_idx, depth - 1)
             
-            # Update Info Text Box
+            # Update info text box
             info_txt.set_text(f"Sample {i} (z: {safe_z}/{depth})")
 
-            # Update Images
+            # Update images
             im_raw.set_data(raw_vol[safe_z])
             im_lbl.set_data(label_vol[safe_z])
             
@@ -220,13 +220,13 @@ def visualize_individual_gifs(
         
         plt.close(fig) # Close figure to free memory
 
-# --- Example Usage ---
+# --- Example usage ---
 if __name__ == "__main__":
     visualize_individual_gifs(
         root_dir="/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data",  # data_path
         output_dir="training_crops",
         num_samples=-1,        # Process first k samples (-1 for all)
-        viz_hw=(512, 512),     # Higher resolution for single plots
-        z_stride=1,            # Smaller stride for smoother individual animations
+        viz_hw=(480, 480),     # Higher resolution for single plots
+        z_stride=2,            # Smaller stride for smoother individual animations
         fps=10
     )
