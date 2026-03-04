@@ -85,12 +85,14 @@ torchrun \
 ```
 where `CONFIG_FILE` specifies the config file to be used for the training job. Example config files for training 2D and 3D segmentation models can be found in [`train_configs/demo_segmentation_2d.toml`](train_configs/demo_segmentation_2d.toml) and [`train_configs/demo_segmentation_3d.toml`](train_configs/demo_segmentation_3d.toml), respectively. A complete example SLURM batch file is provided in [`train_segmentation.sh`](train_segmentation.sh). 
 
-Currently, only backbones with the DINOv3 encoder architecture are supported in the segmentation models (pretrained or randomly initialized). The default segmentation head uses a linear segmentation head bolted on top of the concatenation of four uniformly spaced feature maps (layers) from the encoder backbone. The provided demo segmentation configs will train 2D or 3D segmentation models from scratch. To utilize the pretrained DINOv3 checkpoints, you will need first to convert the `.pth` checkpoints (provided by Meta) to distributed `dcp` checkpoints. You can use the [`pth_to_dcp.py`](pth_to_dcp.py) script to achieve this conversion, *e.g.*:
+Currently, only backbones with the DINOv3 encoder architecture are supported in the segmentation models (pretrained or randomly initialized). The default segmentation head uses a linear segmentation head bolted on top of the concatenation of four uniformly spaced feature maps (layers) from the encoder backbone. The provided demo segmentation configs will train 2D or 3D segmentation models from scratch. 
+
+To utilize the pretrained DINOv3 checkpoints, you will need first to convert the `.pth` checkpoints (provided by Meta) to distributed `dcp` checkpoints. You can use the [`pth_to_dcp.py`](pth_to_dcp.py) script to achieve this conversion, *e.g.*:
 ```python
 python -u pth_to_dcp.py \
     --torch_hub_path TORCH_HUB_PATH \
     --dinov3_repo_path DINOV3_REPO_PATH \
-    --dcp_root DCP_ROOT \
+    --dcp_root DCP_ROOT
 ```
 where `TORCH_HUB_PATH` is the root `torch_hub` path (where the `pth` checkpoints are saved locally), `DINOV3_REPO_PATH` is the path to the local dinov3 repository, and `DCP_ROOT` is the root `dcp` path where the converted `dcp` checkpoint will be saved (`outputs` by default).
 
