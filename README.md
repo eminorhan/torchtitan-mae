@@ -34,7 +34,7 @@ python setup.py install
 * **[aws-ofi-nccl]** (On Arch only) For a more performant interconnect, install the [`aws-ofi-nccl`](https://github.com/aws/aws-ofi-nccl) plugin, which will enable `nccl` to use `libfabric`. I provide an example bash shell script [here](build_aws_ofi_nccl.sh), demonstrating how to install the `aws-ofi-nccl` plugin (note that this is Arch specific; you would need to modify the script depending on your set-up).
 
 ### Data
-Download the full CellMap challenge data as described [here](https://github.com/janelia-cellmap/cellmap-segmentation-challenge?tab=readme-ov-file#download-the-data), *e.g.*:
+Download the full CellMap challenge data as described [here](https://github.com/janelia-cellmap/cellmap-segmentation-challenge?tab=readme-ov-file#download-the-data), *e.g.* (after installing the `cellmap-segmentation-challenge` repository):
 ```bash
 csc fetch-data --raw-padding 128 --fetch-all-em-resolutions --batch-size 1024 --num-workers 64
 ```
