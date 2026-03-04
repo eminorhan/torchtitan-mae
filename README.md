@@ -94,7 +94,7 @@ python -u pth_to_dcp.py \
     --dinov3_repo_path DINOV3_REPO_PATH \
     --dcp_root DCP_ROOT
 ```
-where `TORCH_HUB_PATH` is the root `torch_hub` path (where the `pth` checkpoints are saved locally), `DINOV3_REPO_PATH` is the path to the local dinov3 repository, and `DCP_ROOT` is the root `dcp` path where the converted `dcp` checkpoint will be saved (`outputs` by default).
+where `TORCH_HUB_PATH` is the root `torch_hub` path (where the `pth` checkpoints are saved locally), `DINOV3_REPO_PATH` is the path to the local dinov3 repository, and `DCP_ROOT` is the root `dcp` path where the converted `dcp` checkpoint will be saved (`outputs` by default). Finally, in the training config file, make sure that `config.job.dump_folder` matches `DCP_ROOT / f"{backbone}_{decoder_type}"` (*e.g.* `outptus/dinov3_vit7b16_linear`) to be able start training from the corresponding pretrained backbone.
 
 During training: 
 
@@ -104,7 +104,7 @@ During training:
 
 ![](assets/dinov3_vitl16_val_sample_rank8_sample0.gif)
 
-The frequency with which these things happen can be controlled in the config files.
+The frequency with which these things happen can be controlled from the config files.
 
 ### Helpers
 
