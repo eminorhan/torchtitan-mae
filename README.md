@@ -42,7 +42,7 @@ csc fetch-data --raw-padding 128 --fetch-all-em-resolutions --batch-size 1024 --
 ### Code components
 The following is a brief description of the main components of the code base so users can navigate and modify the code base more easily according to their needs:
 
-* [`torchtitan/parallelisms`](torchtitan/parallelisms/): implements the main parallelization techniques (DDP, FSDP, TP), as well as activation checkpointing (AC), JIT compilation (`torch.compile`), and mixed precision training for both MAE [`torchtitan/parallelisms/parallelize_mae.py`](torchtitan/parallelisms/parallelize_mae.py) and DINOv3 [`torchtitan/parallelisms/parallelize_dino.py`](torchtitan/parallelisms/parallelize_dino.py) models used for segmentation.
+* [`torchtitan/parallelisms`](torchtitan/parallelisms/): implements the main parallelization techniques (DDP, FSDP, TP), as well as activation checkpointing (AC), JIT compilation (`torch.compile`), and mixed precision training for both [MAE](torchtitan/parallelisms/parallelize_mae.py) and [DINOv3](torchtitan/parallelisms/parallelize_dino.py) models used for segmentation.
 * [`torchtitan/checkpoint.py`](torchtitan/checkpoint.py): implements the distributed checkpoint saving and loading logic.
 * [`torchtitan/config_manager.py`](torchtitan/config_manager.py): implements all config options and defaults.
 * [`torchtitan/datasets.py`](torchtitan/datasets.py): implements the 2D/3D dataset and dataloader classes.
@@ -85,7 +85,14 @@ torchrun \
 ```
 where `CONFIG_FILE` specifies the config file to be used for the training job. Example config files for training 2D and 3D segmentation models can be found in [`train_configs/demo_segmentation_2d.toml`](train_configs/demo_segmentation_2d.toml) and [`train_configs/demo_segmentation_3d.toml`](train_configs/demo_segmentation_3d.toml), respectively. A complete example SLURM batch file is provided in [`train_segmentation.sh`](train_segmentation.sh). 
 
-Currently, only backbones with the DINOv3 encoder architecture are supported in the segmentation models (pretrained or randomly initialized). The provided demo segmentation configs will train 2D or 3D segmentation models from scratch. The default segmentation head uses a linear segmentation head bolted on top of the concatenation of four uniformly spaced feature maps from the encoder backbone.
+Currently, only backbones with the DINOv3 encoder architecture are supported in the segmentation models (pretrained or randomly initialized). The default segmentation head uses a linear segmentation head bolted on top of the concatenation of four uniformly spaced feature maps (layers) from the encoder backbone. The provided demo segmentation configs will train 2D or 3D segmentation models from scratch. To utilize the pretrained DINOv3 checkpoints, you will need first to convert the `.pth` checkpoints (provided by Meta) to distributed `dcp` checkpoints. You can use the [`pth_to_dcp.py`](pth_to_dcp.py) script to achieve this conversion, *e.g.*:
+```python
+python -u pth_to_dcp.py \
+    --torch_hub_path TORCH_HUB_PATH \
+    --dinov3_repo_path DINOV3_REPO_PATH \
+    --dcp_root DCP_ROOT \
+```
+where `TORCH_HUB_PATH` is the root `torch_hub` path (where the `pth` checkpoints are saved locally), `DINOV3_REPO_PATH` is the path to the local dinov3 repository, and `DCP_ROOT` is the root `dcp` path where the converted `dcp` checkpoint will be saved (`outputs` by default).
 
 During training: 
 

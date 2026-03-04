@@ -9,7 +9,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Load DINOv3 models and save them as DCP checkpoints.")
     parser.add_argument("--torch_hub_path", type=Path, default=Path("/lustre/blizzard/stf218/scratch/emin/torch_hub"), help="Root of torch_hub")
     parser.add_argument("--dinov3_repo_path", type=Path, default=Path("/lustre/blizzard/stf218/scratch/emin/dinov3"), help="DINOv3 repo path")
-    parser.add_argument("--dcp_root", type=Path, default=Path("/lustre/blizzard/stf218/scratch/emin/torchtitan-segmentation/outputs"), help="Root path where DCP checkpoints will be saved")
+    parser.add_argument("--dcp_root", type=Path, default=Path("outputs"), help="Root path where DCP checkpoints will be saved")
     parser.add_argument("--decoder_type", type=str, choices=["linear", "m2f"], default="linear", help="Segmentation head type (choices: linear, m2f)")
     parser.add_argument("--num_classes", type=int, default=64, help="Number of classes in the current semantic segmentation task")
     return parser.parse_args()
