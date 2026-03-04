@@ -104,4 +104,6 @@ The [`helpers`](helpers) directory provides a few useful utilities:
 * [`helpers/plot_volumes_grid.py`](helpers/plot_volumes_grid.py): visualizes a grid of EM volumes with their segmentation masks as a `.gif` animation. 
 * [`helpers/plot_volumes_single.py`](helpers/plot_volumes_single.py): visualizes individual EM volumes with their segmentation masks and labels as a `.gif` animation, like the following example:
 
-![](assets/sample_27_viz.gif)
+<div align="center">
+  <img src="assets/sample_27_viz.gif" width="480">
+</div>
