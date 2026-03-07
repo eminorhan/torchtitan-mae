@@ -8,18 +8,21 @@
 import contextlib
 import os
 import time
+import json
 from datetime import timedelta
 
+# torch imports
 import torch
 from torch.distributed.elastic.multiprocessing.errors import record
 
+# torchtitan imports
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_data_loader
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
-from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
+from torchtitan.metrics import build_gpu_memory_monitor
 from torchtitan.model import MaskedAutoencoder, model_configs
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import parallelize_mae, ParallelDims
@@ -148,14 +151,22 @@ def main(job_config: JobConfig):
 
     checkpoint_loaded = checkpoint.load()
 
-    metric_logger = build_metric_logger(job_config, parallel_dims)
-
-    # plot losses loaded from checkpoint (if any) to TensorBoard
-    # NOTE: Loss info after the last log step before checkpoint saving will not be plotted. This can be avoided by setting checkpoint.interval to be a multiple of metrics.log_freq
-    if train_state.step > 0:
-        for idx, step in enumerate(train_state.log_steps):
-            metrics = {"loss_metrics/global_avg_loss": train_state.global_avg_losses[idx], "loss_metrics/global_max_loss": train_state.global_max_losses[idx]}
-            metric_logger.log(metrics, step=step)
+    # set up file logger (only on rank 0)
+    log_file_handle = None
+    if torch.distributed.get_rank() == 0:
+        # log file will be under dump_folder/log_folder
+        dump_folder = getattr(job_config.job, "dump_folder", ".")
+        log_folder = getattr(job_config.metrics, "folder", "logs")
+        
+        # combine: e.g., "./outputs/model_name/logs"
+        log_dir = os.path.join(dump_folder, log_folder)
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # define the final file path
+        log_file_path = os.path.join(log_dir, "metrics.jsonl")
+        
+        # open in append mode so resuming jobs simply continue logging
+        log_file_handle = open(log_file_path, "a")
 
     data_iterator = iter(data_loader)
     train_context = get_train_context(parallel_dims.loss_parallel_enabled, job_config.experimental.enable_compiled_autograd)
@@ -242,23 +253,27 @@ def main(job_config: JobConfig):
 
                 gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
 
-                metrics = {
-                    "loss_metrics/global_avg_loss": global_avg_loss,
-                    "loss_metrics/global_max_loss": global_max_loss,
-                    "wps": wps,
-                    "mfu(%)": mfu,
-                    "time_metrics/end_to_end(s)": time_end_to_end,
-                    "time_metrics/data_loading(s)": time_data_loading,
-                    "time_metrics/data_loading(%)": time_data_loading_pct,
-                    "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
-                    "memory/max_active(%)": gpu_mem_stats.max_active_pct,
-                    "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
-                    "memory/max_reserved(%)": gpu_mem_stats.max_reserved_pct,
-                    "memory/num_alloc_retries": gpu_mem_stats.num_alloc_retries,
-                    "memory/num_ooms": gpu_mem_stats.num_ooms,
-                }
-                metric_logger.log(metrics, step=train_state.step)
+                # log to file
+                if log_file_handle is not None:
+                    metrics = {
+                        "loss_metrics/global_avg_loss": global_avg_loss,
+                        "loss_metrics/global_max_loss": global_max_loss,
+                        "wps": wps,
+                        "mfu(%)": mfu,
+                        "time_metrics/end_to_end(s)": time_end_to_end,
+                        "time_metrics/data_loading(s)": time_data_loading,
+                        "time_metrics/data_loading(%)": time_data_loading_pct,
+                        "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
+                        "memory/max_active(%)": gpu_mem_stats.max_active_pct,
+                        "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
+                        "memory/max_reserved(%)": gpu_mem_stats.max_reserved_pct,
+                        "memory/num_alloc_retries": gpu_mem_stats.num_alloc_retries,
+                        "memory/num_ooms": gpu_mem_stats.num_ooms,
+                    }
+                    log_file_handle.write(json.dumps(metrics) + "\n")
+                    log_file_handle.flush()  # force write to disk
 
+                # log to stdout
                 logger.info(
                     f"{color.cyan}step: {train_state.step:2}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
@@ -291,7 +306,9 @@ def main(job_config: JobConfig):
         logger.info("Sleeping 2 seconds for other ranks to complete")
         time.sleep(2)
 
-    metric_logger.close()
+    if log_file_handle is not None:
+        log_file_handle.close()
+
     logger.info("Training completed")
 
 
