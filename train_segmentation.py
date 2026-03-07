@@ -271,7 +271,6 @@ def main(job_config: JobConfig):
                 train_state.global_max_losses.append(global_max_loss)
 
                 time_delta = time.perf_counter() - time_last_log
-
                 time_end_to_end = time_delta / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
                 time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
@@ -304,7 +303,7 @@ def main(job_config: JobConfig):
                 logger.info(
                     f"{color.cyan}step: {train_state.step:2}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
-                    f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
+                    f"{color.red}lr: {current_lr:.6f}  "
                     f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
                 )

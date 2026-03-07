@@ -196,16 +196,15 @@ def main(job_config: JobConfig):
 
             # get batch
             data_load_start = time.perf_counter()
-            batch = next(data_iterator)
-            ntokens_since_last_log += int(batch.shape[0] * (model_config.img_size // model_config.patch_size) ** 3)
+            inputs, _ = next(data_iterator)
             data_loading_times.append(time.perf_counter() - data_load_start)
 
-            batch = batch.cuda()
+            inputs = inputs.cuda()
             optimizers.zero_grad()
             
             # run forward / backward
             with train_context():
-                loss = model(batch)
+                loss = model(inputs)
                 loss.backward()
             
             # clip gradients
@@ -241,25 +240,20 @@ def main(job_config: JobConfig):
                 train_state.global_max_losses.append(global_max_loss)
 
                 time_delta = time.perf_counter() - time_last_log
-
-                # tokens per second, abbr. as wps by convention
-                wps = ntokens_since_last_log / (time_delta * parallel_dims.model_parallel_size)
-                # model FLOPS utilization; for its definition and calculation, please refer to the PaLM paper: https://arxiv.org/abs/2204.02311
-                mfu = 100 * num_flop_per_token * wps / gpu_peak_flops
-
                 time_end_to_end = time_delta / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
                 time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
 
                 gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
+                current_lr = optimizers.optimizers[0].param_groups[0]['lr']
 
                 # log to file
                 if log_file_handle is not None:
                     metrics = {
+                        "step": train_state.step,
+                        "lr": current_lr,
                         "loss_metrics/global_avg_loss": global_avg_loss,
                         "loss_metrics/global_max_loss": global_max_loss,
-                        "wps": wps,
-                        "mfu(%)": mfu,
                         "time_metrics/end_to_end(s)": time_end_to_end,
                         "time_metrics/data_loading(s)": time_data_loading,
                         "time_metrics/data_loading(%)": time_data_loading_pct,
@@ -277,7 +271,7 @@ def main(job_config: JobConfig):
                 logger.info(
                     f"{color.cyan}step: {train_state.step:2}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
-                    f"{color.red}lr: {optimizers.optimizers[0].param_groups[0]['lr']:.6f}  "
+                    f"{color.red}lr: {current_lr:.6f}  "
                     f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}wps: {round(wps):,}  "
@@ -285,7 +279,6 @@ def main(job_config: JobConfig):
                 )
 
                 losses_since_last_log.clear()
-                ntokens_since_last_log = 0
                 data_loading_times.clear()
                 time_last_log = time.perf_counter()
                 gpu_memory_monitor.reset_peak_stats()
