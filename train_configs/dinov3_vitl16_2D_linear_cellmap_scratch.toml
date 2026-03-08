@@ -1,5 +1,3 @@
-# torchtitan Config.toml
-
 [job]
 dump_folder = "./outputs/dinov3_vitl16_2D_linear_cellmap_scratch"
 description = "segmentation training"
@@ -12,7 +10,6 @@ profile_freq = 10
 [metrics]
 log_freq = 100
 eval_freq = 100
-enable_tensorboard = false
 save_tb_folder = "tb"
 
 [model]

@@ -1,6 +1,6 @@
 [job]
 dump_folder = "./outputs/demo_mae"
-description = "demo-mae training"
+description = "mae training"
 
 [profiling]
 enable_profiling = false
@@ -9,14 +9,19 @@ profile_freq = 10
 
 [metrics]
 log_freq = 100
-enable_tensorboard = false
-save_tb_folder = "tb"
+folder = "logs"
 
 [model]
 size = "2B"  # "2B" or "8B"
 img_size = 512  
 patch_size = 8  
 mask_ratio = 0.95
+crop_size = [512, 512, 512]
+val_crop_size = [512, 512, 512]
+
+[data]
+dataset_folder = "/lustre/blizzard/stf218/scratch/emin/cellmap-segmentation-challenge/data"
+augment = true  # whether to use "cheap" data augmentations during data loading
 
 [optimizer]
 name = "AdamW"

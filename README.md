@@ -100,11 +100,11 @@ During training:
 
 * Distributed (`dcp`) checkpoints will be saved under `config.job.dump_folder/checkpoint`
 * Training and evaluation metrics will be saved under `config.job.dump_folder/logs`
-* Visualization of predicted vs. ground truth masks for each 3D validation crop will be saved under `config.job.dump_folder/visuals` as `.gif` animations like the following example:
+* Visualization of predicted vs. ground truth masks for each 3D validation crop will be saved under `config.job.dump_folder/visuals` as `.gif` animations like the following example (this example was taken from a pretrained model with a `dinov3_vitl16` backbone that was then further trained on the CellMap data using the self-supervised DINOv3 algorithm):
 
 ![](assets/dinov3_vitl16_val_sample_rank8_sample0.gif)
 
-The frequency with which these things happen can be controlled from the training config files.
+The frequency with which these artifacts are produced during training can be controlled from the training config files.
 
 ### Helpers
 

@@ -87,12 +87,14 @@ def main(job_config: JobConfig):
         dp_degree, dp_rank = 1, 0
 
     # build dataloader
-    data_loader = build_data_loader(
+    data_loader, _ = build_data_loader(
         job_config.training.batch_size,
-        (job_config.model.img_size, job_config.model.img_size, job_config.model.img_size),
-        job_config.training.num_workers,
-        dp_degree,
+        job_config.data.dataset_folder,
+        tuple(job_config.model.crop_size),
+        tuple(job_config.model.val_crop_size),
         dp_rank,
+        world_size,
+        job_config.data.augment
     )
 
     # build model (using meta init)
